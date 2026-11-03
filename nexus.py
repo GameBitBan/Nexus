@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.17.0"
+VERSION = "1.17.1"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 DISCORD_APP_ID = "1566983013445931018"  # Nexus's own discord app: lets anyone show what they're playing without making one
 
@@ -13364,8 +13364,19 @@ class Main(QMainWindow):
             if f.lower().endswith(SKIN_EXT) or f.lower().endswith(".zip") and zip_has(f, "skin.json"):
                 self.import_skin(f)
                 return
-            if f.lower().endswith(".zip"):
+            if f.lower().endswith(".zip") and zip_has(f, "nexus.py"):
                 self.install_update(f)
+                return
+            if f.lower().endswith(".zip"):           # an album zip (Bandcamp etc.) → into the library
+                def work(path=f):
+                    return self.importer.import_zip(path)
+
+                def done(res, err, name=os.path.basename(f)):
+                    n = len(res or [])
+                    self.toast(f"imported {n} song{'s' if n != 1 else ''} from {name}" if n and not err else
+                               f"no music found in {name}")
+                self.toast(f"importing {os.path.basename(f)}…")
+                self.bg(work, done)
                 return
             if os.path.splitext(f)[1].lower() in AUDIO_EXT:
                 self.go("inspect", f)
