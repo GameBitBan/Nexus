@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.10.1"
+VERSION = "1.10.2"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",

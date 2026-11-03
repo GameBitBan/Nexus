@@ -34,7 +34,7 @@ On first launch it scans `~/Music` (or your old monotone folders). Add folders i
 
 Nexus checks GitHub Releases on launch and shows a little *update + restart* button at the bottom when there's a new version (settings → update to turn that off or check now). You can also **drag a nexus.zip onto the window**. It swaps the app files in place, installs any new packages on the next start, keeps your library, playlists and settings, and restarts. The previous `nexus.py` is kept in `_previous/`. Soulseek downloads that are still running pause for the restart, then carry on and import by themselves (from 1.7.1 on).
 
-Making a release: bump `VERSION` in `nexus.py`, commit, then tag and push (`git tag v1.11.0 && git push --tags`). GitHub Actions builds `nexus.zip` and publishes the release; everyone's Nexus picks it up.
+Making a release: bump `VERSION` in `nexus.py` and push to `main`. GitHub Actions builds `nexus.zip`, tags it `v<VERSION>` and publishes the release; everyone's Nexus picks it up.
 
 ## sound
 
