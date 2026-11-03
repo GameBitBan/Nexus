@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.12.5"
+VERSION = "1.12.6"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -3217,19 +3217,77 @@ class DownloadError(Exception):
     pass
 
 
-FIREWALL_RULE = "Nexus Soulseek"
+FIREWALL_RULE = "Nexus-Soulseek"                 # no spaces: netsh can't look up a quoted name reliably
+_OLD_RULES = ("Nexus Soulseek", "Nexus Soulseek 1", "Nexus Soulseek 2", "Nexus Soulseek 3")
 
 
 def firewall_ok():
-    """windows: is our inbound rule there? (None = can't tell / not windows)"""
+    """windows: is our inbound allow rule there? (None = can't tell / not windows)"""
     if not sys.platform.startswith("win"):
         return None
     try:
         r = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", f"name={FIREWALL_RULE}"],
                            capture_output=True, text=True, timeout=8, creationflags=0x08000000)
-        return r.returncode == 0 and FIREWALL_RULE in (r.stdout or "")
+        if r.returncode == 0 and FIREWALL_RULE in (r.stdout or ""):
+            return True
+        names = ",".join(f"'{n}'" for n in _OLD_RULES)        # rules from earlier versions (names with spaces)
+        r = subprocess.run(["powershell", "-NoProfile", "-Command",
+                            f"@(Get-NetFirewallRule -DisplayName {names} -ErrorAction SilentlyContinue | "
+                            f"Where-Object {{ $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' }}).Count"],
+                           capture_output=True, text=True, timeout=20, creationflags=0x08000000)
+        out = (r.stdout or "").strip()
+        return out.isdigit() and int(out) > 0
     except Exception:
         return None
+
+
+def _run_elevated_wait(exe, params, timeout_ms=60000):
+    """runs exe as admin (windows asks), waits for it. → True ran, False cancelled / failed."""
+    import ctypes
+    from ctypes import wintypes
+
+    class SEI(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("fMask", ctypes.c_ulong), ("hwnd", wintypes.HWND),
+                    ("lpVerb", wintypes.LPCWSTR), ("lpFile", wintypes.LPCWSTR), ("lpParameters", wintypes.LPCWSTR),
+                    ("lpDirectory", wintypes.LPCWSTR), ("nShow", ctypes.c_int), ("hInstApp", wintypes.HINSTANCE),
+                    ("lpIDList", ctypes.c_void_p), ("lpClass", wintypes.LPCWSTR), ("hkeyClass", wintypes.HKEY),
+                    ("dwHotKey", wintypes.DWORD), ("hIconOrMonitor", wintypes.HANDLE),
+                    ("hProcess", wintypes.HANDLE)]
+    sei = SEI()
+    sei.cbSize = ctypes.sizeof(SEI)
+    sei.fMask = 0x00000040                                          # SEE_MASK_NOCLOSEPROCESS
+    sei.lpVerb, sei.lpFile, sei.lpParameters, sei.nShow = "runas", exe, params, 0
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)) or not sei.hProcess:
+        return False
+    ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, timeout_ms)
+    ctypes.windll.kernel32.CloseHandle(sei.hProcess)
+    return True
+
+
+def upnp_status(log_path):
+    """what the router said to UPnP, from the soulseek log → "mapped" / "failed" / "none" (no UPnP router) / None."""
+    try:
+        text = Path(log_path).read_text("utf-8", errors="replace")[-200000:]
+    except OSError:
+        return None
+    last = {k: text.rfind(m) for k, m in (("mapped", "UPnP: mapped port"), ("ok", "rechecking port mapping"),
+                                          ("failed", "UPnP: failed to"), ("none", "found 0 devices for UPnP"))}
+    k, pos = max(last.items(), key=lambda kv: kv[1])
+    if pos < 0:
+        return None
+    return "mapped" if k in ("mapped", "ok") else k
+
+
+def local_ip():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "this PC"
 
 
 def port_check(port):
@@ -3269,21 +3327,25 @@ def broader_queries(text):
     return [x for x in dict.fromkeys(out) if x and x.lower() != q.lower()]
 
 
-def firewall_fix(port):
-    """one admin prompt: (re)creates inbound allow rules for python on just the soulseek ports."""
-    import ctypes
+def firewall_fix(port, wait=False):
+    """one admin prompt: (re)creates the inbound allow rule for python on just the soulseek ports.
+    wait=True blocks until it's done (call it off the ui thread) and returns whether the rule now exists."""
     exe_dir = Path(sys.executable).parent
     progs = [str(p) for p in dict.fromkeys((exe_dir / "pythonw.exe", exe_dir / "python.exe", Path(sys.executable)))
              if Path(p).exists()]
     ports = f"{port},{port + 1}"
-    cmds = [f'netsh advfirewall firewall delete rule name="{FIREWALL_RULE}"']
+    cmds = [f"netsh advfirewall firewall delete rule name={FIREWALL_RULE}"]
+    cmds += [f'netsh advfirewall firewall delete rule name="{n}"' for n in _OLD_RULES]
     for prog in progs:
-        cmds.append(f'netsh advfirewall firewall add rule name="{FIREWALL_RULE}" dir=in action=allow '
+        cmds.append(f'netsh advfirewall firewall add rule name={FIREWALL_RULE} dir=in action=allow '
                     f'program="{prog}" protocol=TCP localport={ports} enable=yes profile=any')
-    for i in range(1, 4):                                   # older Nexus versions made these broader rules
-        cmds.append(f'netsh advfirewall firewall delete rule name="Nexus Soulseek {i}"')
-    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", "/c " + " & ".join(cmds), None, 0)
-    return rc > 32
+    params = "/c " + " & ".join(cmds)
+    if not wait:
+        import ctypes
+        return ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", params, None, 0) > 32
+    if not _run_elevated_wait("cmd.exe", params):
+        return False
+    return bool(firewall_ok())
 
 
 def remote_split(path):
@@ -3760,15 +3822,21 @@ class SoulseekNative:
                     f"pick another port in settings → downloads")
         reach = port_check(port)
         fw = firewall_ok()
-        self.log.info("diagnose: port %s %s, firewall rule %s", port, reach, fw)
+        up = upnp_status(self.log_path())
+        self.log.info("diagnose: port %s %s, firewall rule %s, upnp %s", port, reach, fw, up)
         if reach == "closed":
             if fw is False:
-                return (f"other users can't reach you (port {port} is closed) — Windows Firewall isn't set up: "
-                        f"use “fix firewall” on this page")
-            return (f"other users can't reach you: port {port} is closed. Windows Firewall is fine"
-                    f"{'' if fw else ' (or not in use)'}, so it's your router — turn on UPnP in its settings, "
-                    f"or forward TCP ports {port}-{port + 1} to this PC. Results from people who can reach out to "
-                    f"you will still come in")
+                return (f"port {port} is closed and the Windows Firewall rule is missing — use “fix firewall” on "
+                        f"this page")
+            fwd = f"forward TCP ports {port}-{port + 1} to {local_ip()} in your router"
+            router = {"none": f"your router isn't answering UPnP — turn UPnP on in its settings, or {fwd}",
+                      "failed": f"your router refused to open the port automatically — {fwd}",
+                      "mapped": ("your router says the port is open but it's still closed from outside — usually "
+                                 "your internet provider shares one public IP between customers (CGNAT) or there "
+                                 "are two routers")}.get(up, f"turn on UPnP in your router, or {fwd}")
+            return (f"the firewall on this PC is fine — your router is the block (port {port} closed from the "
+                    f"internet): {router}. downloads from people who can be reached still work; this mostly costs "
+                    f"you search results")
         if fw is False:
             return "Windows Firewall isn't set up for Nexus yet — use “fix firewall” on this page, then search again"
         return (f"port {port} is open, so it's the search: nobody shares files whose names contain every word of "
@@ -4344,13 +4412,20 @@ class DownloadPage(QWidget):
         self.win.bg(firewall_ok, lambda ok, _e: self.fw.setVisible(ok is False))
 
     def fix_firewall(self):
-        if firewall_fix(int(self.win.cfg.get("slsk_port", 2234))):
-            self.fw.hide()
-            self.win.toast("firewall fixed (if you clicked yes) — reconnecting to Soulseek")
-            self.win.soulseek.restart()
-            QTimer.singleShot(3000, self.poll)
-        else:
-            self.win.toast("firewall change cancelled")
+        port = int(self.win.cfg.get("slsk_port", 2234))
+        self.win.toast("click Yes on the Windows prompt…", ms=15000)
+
+        def done(ok, err):
+            if ok:
+                self.fw.hide()
+                self.win.toast("Windows Firewall is set up — reconnecting to Soulseek")
+                self.win.soulseek.restart()
+                QTimer.singleShot(3000, self.poll)
+            else:
+                self.fw.show()
+                self.win.toast("the firewall rule didn't get added (prompt cancelled, or no admin rights on this "
+                               "account)" + (f": {err}" if err else ""), ms=15000)
+        self.win.bg(lambda: firewall_fix(port, wait=True), done)
 
     def clear_finished(self):
         c = self.client()
@@ -8515,11 +8590,20 @@ class Settings(QWidget):
         def test_port():
             port = int(self.win.cfg.get("slsk_port", 2234))
             self.test_result.setText(f"testing port {port}…")
-            self.win.bg(lambda: port_check(port), lambda r, _e: self.test_result.setText(
-                {"open": f"port {port} is open — other users can reach you",
-                 "closed": f"port {port} is closed — connect to Soulseek first (search once), then test again; if "
-                           f"still closed, turn on UPnP in your router or forward TCP {port}-{port + 1} to this PC"}
-                .get(r, "couldn't run the port test (no internet?)")))
+            def work():
+                return port_check(port), firewall_ok(), upnp_status(self.win.soulseek.log_path())
+
+            def show(res, _e):
+                r, fw, up = res or (None, None, None)
+                fw_t = {True: "firewall rule: ok", False: "firewall rule: MISSING (allow through firewall)",
+                        None: ""}[fw]
+                up_t = {"mapped": "router UPnP: port mapped", "failed": "router UPnP: refused",
+                        "none": "router UPnP: no answer (off?)", None: ""}[up]
+                head = {"open": f"port {port} is OPEN — other users can reach you",
+                        "closed": f"port {port} is CLOSED from the internet (connect to Soulseek first, then test)"}\
+                    .get(r, "couldn't run the port test (no internet?)")
+                self.test_result.setText("  ·  ".join(x for x in (head, fw_t, up_t) if x))
+            self.win.bg(work, show)
         pt.clicked.connect(test_port)
         hrow.addWidget(pt)
         lg = QPushButton("open soulseek log")
@@ -8785,11 +8869,17 @@ class Settings(QWidget):
 
     def allow_firewall(self):
         """inbound allow rule for python on the soulseek ports only, via an elevated netsh. windows asks first."""
-        if firewall_fix(int(self.win.cfg.get("slsk_port", 2234))):
-            self.test_result.setText("firewall rules added (if you clicked yes) — restart Nexus, then search again")
-            self.win.soulseek.restart()
-        else:
-            self.test_result.setText("firewall change cancelled")
+        port = int(self.win.cfg.get("slsk_port", 2234))
+        self.test_result.setText("click Yes on the Windows prompt…")
+
+        def done(ok, err):
+            if ok:
+                self.test_result.setText("firewall rule added and checked — reconnecting to Soulseek")
+                self.win.soulseek.restart()
+            else:
+                self.test_result.setText("the firewall rule didn't get added (cancelled, or this account isn't an "
+                                         "admin)" + (f": {err}" if err else ""))
+        self.win.bg(lambda: firewall_fix(port, wait=True), done)
 
     def test_soulseek(self):
         self.test_result.setText("connecting…")

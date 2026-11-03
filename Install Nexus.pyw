@@ -195,16 +195,17 @@ def allow_firewall(port=2234):
     """one admin prompt: lets other Soulseek users connect to Nexus (only its two download ports)."""
     exe_dir = Path(sys.executable).parent
     progs = [str(p) for p in dict.fromkeys((exe_dir / "pythonw.exe", exe_dir / "python.exe")) if Path(p).exists()]
-    name = "Nexus Soulseek"
-    cmds = [f'netsh advfirewall firewall delete rule name="{name}"']
-    cmds += [f'netsh advfirewall firewall add rule name="{name}" dir=in action=allow program="{p}" protocol=TCP '
+    name = "Nexus-Soulseek"                       # no spaces: netsh can't look up quoted names reliably
+    cmds = [f"netsh advfirewall firewall delete rule name={name}",
+            'netsh advfirewall firewall delete rule name="Nexus Soulseek"']
+    cmds += [f'netsh advfirewall firewall add rule name={name} dir=in action=allow program="{p}" protocol=TCP '
              f'localport={port},{port + 1} enable=yes profile=any' for p in progs]
     return ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", "/c " + " & ".join(cmds), None, 0) > 32
 
 
 def firewall_rule_exists():
     try:
-        r = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", "name=Nexus Soulseek"],
+        r = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", "name=Nexus-Soulseek"],
                            capture_output=True, text=True, timeout=8, creationflags=0x08000000)
         return r.returncode == 0
     except Exception:
