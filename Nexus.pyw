@@ -3,12 +3,16 @@
 # on every start it installs anything new listed in requirements.txt (so updates can add packages).
 # if Nexus can't start, it says why in a message box and writes %APPDATA%\nexus\crash.log
 #   py Nexus.pyw --check   → checks every package loads and prints versions (used by the installer)
-import importlib.util
-import os
-import re
-import subprocess
 import sys
-import traceback
+
+if hasattr(sys, "set_lazy_imports_filter"):      # python 3.15: lazy imports + PySide6 don't mix (see nexus.py)
+    sys.set_lazy_imports_filter(lambda *_a: False)
+
+import importlib.util  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import subprocess  # noqa: E402
+import traceback  # noqa: E402
 
 here = os.path.dirname(os.path.abspath(__file__))
 MODULE = {"pyside6": "PySide6", "mutagen": "mutagen", "numpy": "numpy", "av": "av", "sounddevice": "sounddevice",

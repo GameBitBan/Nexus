@@ -9,6 +9,31 @@ album art everywhere, and almost every visual detail is editable live in setting
 deps:  pip install PySide6 mutagen
 run:   python nexus.py
 """
+import sys
+
+
+def _no_lazy_imports():
+    """python 3.15 added lazy imports, and PySide6 stops them from ever resolving: asyncio (soulseek),
+    thread pools and more then crash with "'lazy_import' object is not callable". so: make every import
+    eager from here on, and resolve the lazy names already sitting in loaded modules — before Qt loads."""
+    if not hasattr(sys, "set_lazy_imports_filter"):
+        return
+    sys.set_lazy_imports_filter(lambda *_a: False)
+    import concurrent.futures  # noqa: F401  (asyncio's executor lives here)
+    for mod in list(sys.modules.values()):
+        d = getattr(mod, "__dict__", None)
+        if not isinstance(d, dict):
+            continue
+        for name, val in list(d.items()):
+            if type(val).__name__ == "lazy_import":
+                try:
+                    getattr(mod, name)
+                except Exception:
+                    pass
+
+
+_no_lazy_imports()
+
 import copy
 import hashlib
 import json
@@ -43,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.12.3"
+VERSION = "1.12.4"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
