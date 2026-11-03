@@ -4,3 +4,4 @@ numpy>=1.24
 av>=12
 sounddevice>=0.4.6
 aioslsk>=1.6
+aiortc>=1.9

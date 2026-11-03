@@ -43,7 +43,7 @@ def pythonw():
 def install_deps():
     need = [m for m, mod in (("PySide6", "PySide6"), ("mutagen", "mutagen"), ("comtypes", "comtypes"),
                              ("numpy", "numpy"), ("av", "av"), ("sounddevice", "sounddevice"),
-                             ("aioslsk", "aioslsk"))
+                             ("aioslsk", "aioslsk"), ("aiortc", "aiortc"))
             if importlib.util.find_spec(mod) is None]
     if not need:
         return

@@ -58,6 +58,14 @@ The compass in the rail (`ctrl+5`) recommends music from what you already have:
 
 Results are cached and refresh every few days, or hit *refresh*.
 
+## jam (listen together)
+
+The people icon in the rail (`ctrl+j`). One of you **hosts**, the other **joins**:
+- **host**: *start a jam* gives you a code like `K7Q-M2X` (*copy invite* makes a message to paste in Discord). Whatever you play streams to your friends live, about a second behind, up to 4 people. You see who's listening (right-click to remove someone) and a chat.
+- **join**: type the code. Your own music pauses and you hear theirs, with the cover, song, progress, what's up next, your own volume, and the chat. You can search their library and double-click a song to add it to their queue (the host can turn that off, and can let friends skip).
+
+Audio goes straight between your PCs (WebRTC, encrypted, Opus at 320 kbps — near-transparent, not lossless). To find each other, both apps swap connection details through a public ntfy.sh channel named after the code, encrypted with a key made from the code, so the relay only sees scrambled data. If both of you are behind very strict routers (e.g. carrier-grade NAT on both ends) the direct connection can fail — one of you trying a different network (a phone hotspot) usually fixes it. Hosting needs the Nexus audio engine.
+
 ## visualizer & glow
 
 - **visualizer** (`ctrl+b` or the bars icon in the player bar): full-window spectrum over a slowly moving blur of the cover. Styles: **dots** (Nothing-style dot matrix), **bars**, **mirror**, **wave** (oscilloscope), **ring** (cover in the middle, dots radiating out). **mono** / **cover colour** switches between the theme colour and a colour picked from the album art. **Immersive** (or double-click it) hides everything else and goes full screen; `esc` comes back.
@@ -235,6 +243,7 @@ Config: `~/.config/nexus/config.json` (Windows: `%APPDATA%\nexus`). `NEXUS_HOME=
 | ctrl f or `/` | search |
 | esc | clear search |
 | ctrl 1–5 | albums / browse / songs / queue / discover |
+| ctrl j | jam (listen together) |
 | alt ← | back |
 | ctrl e | equalizer |
 | ctrl b | visualizer (esc leaves immersive) |

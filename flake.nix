@@ -8,11 +8,12 @@
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
       py = pkgs.python3.withPackages (ps: [ ps.pyside6 ps.mutagen ps.numpy ps.av ps.sounddevice ]
-        ++ pkgs.lib.optional (ps ? aioslsk) ps.aioslsk);   # built-in soulseek, when nixpkgs has it
+        ++ pkgs.lib.optional (ps ? aioslsk) ps.aioslsk     # built-in soulseek, when nixpkgs has it
+        ++ pkgs.lib.optional (ps ? aiortc) ps.aiortc);     # listen together
     in {
       packages.${system}.default = pkgs.stdenv.mkDerivation {
         pname = "nexus";
-        version = "1.13.0";
+        version = "1.14.0";
         src = ./.;
         nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook pkgs.makeWrapper ];
         buildInputs = [ pkgs.qt6.qtbase pkgs.qt6.qtwayland pkgs.qt6.qtmultimedia ];

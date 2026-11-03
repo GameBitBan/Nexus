@@ -16,7 +16,7 @@ import traceback  # noqa: E402
 
 here = os.path.dirname(os.path.abspath(__file__))
 MODULE = {"pyside6": "PySide6", "mutagen": "mutagen", "numpy": "numpy", "av": "av", "sounddevice": "sounddevice",
-          "aioslsk": "aioslsk"}
+          "aioslsk": "aioslsk", "aiortc": "aiortc"}
 CORE = {"PySide6", "mutagen"}
 CHECK = "--check" in sys.argv
 LOG_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "nexus")

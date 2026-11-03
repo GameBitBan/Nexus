@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.13.0"
+VERSION = "1.14.0"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -142,7 +142,7 @@ COLS = OrderedDict([("#", "#"), ("title", "title"), ("artist", "artist"),
                     ("album", "album"), ("year", "year"), ("genre", "genre"),
                     ("duration", "time"), ("format", "format")])
 
-PAGES = ("discover", "tags", "visualizer", "albums", "artists", "songs", "queue", "album", "playlist", "browse", "settings", "eq", "lyrics", "download",
+PAGES = ("jam", "discover", "tags", "visualizer", "albums", "artists", "songs", "queue", "album", "playlist", "browse", "settings", "eq", "lyrics", "download",
          "inspect")
 
 DEFAULTS = {
@@ -223,6 +223,10 @@ DEFAULTS = {
     "vis_color": "mono",               # mono | cover (colour picked from the album art)
     "vis_sensitivity": 100,
     "rename_pattern": "{track:02} {title}",
+    "jam_name": "",
+    "jam_allow_add": True,             # listeners can add songs from your library to the queue
+    "jam_allow_skip": False,
+    "jam_volume": 0.9,
     "discord_enabled": False,
     "discord_client_id": "",           # your discord application id (its name shows as "Listening to <name>")
     "discord_song_in_status": True,    # show the song title in your status line instead of the app name
@@ -809,7 +813,7 @@ class IconButton(QPushButton):
         return self.win.B({"back": "<", "volume": "vol", "mute": "mute", "columns": "browse", "grid": "albums",
                            "list": "songs", "plus": "+", "search": "/", "gear": "settings",
                            "refresh": "rescan", "panel": "panel", "eq": "eq", "lyrics": "lyrics", "download": "download",
-                           "vis": "vis", "discover": "discover"}.get(self.kind, self.kind))
+                           "vis": "vis", "discover": "discover", "jam": "jam"}.get(self.kind, self.kind))
 
     def relayout(self):
         if self.win.cfg.get("control_style") == "text":
@@ -825,7 +829,7 @@ class IconButton(QPushButton):
             self.relayout()
 
     EXTRA = {"columns", "grid", "list", "queue", "plus", "home", "search", "gear", "refresh", "panel", "eq", "lyrics",
-             "download", "vis", "discover"}
+             "download", "vis", "discover", "jam"}
 
     def draw_extra(self, p, cx, cy, s, col):
         pen = QPen(col, max(1.6, s / 17), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
@@ -920,6 +924,15 @@ class IconButton(QPushButton):
                 p.drawLine(QPointF(x, cy - s * 0.2), QPointF(x, cy + s * 0.2))
                 p.setBrush(QColor(self.win.c["panel"]) if not self.rail else Qt.NoBrush)
                 p.drawEllipse(QRectF(x - s * 0.05, cy + s * ky - s * 0.05, s * 0.1, s * 0.1))
+        elif k == "jam":                               # two people
+            for dx in (-0.1, 0.1):
+                x = cx + s * dx
+                p.drawEllipse(QPointF(x, cy - s * 0.08), s * 0.075, s * 0.075)
+                arc = QPainterPath()
+                arc.moveTo(x - s * 0.13, cy + s * 0.2)
+                arc.quadTo(x - s * 0.13, cy + s * 0.04, x, cy + s * 0.04)
+                arc.quadTo(x + s * 0.13, cy + s * 0.04, x + s * 0.13, cy + s * 0.2)
+                p.drawPath(arc)
         elif k == "discover":                          # compass
             p.drawEllipse(QPointF(cx, cy), s * 0.22, s * 0.22)
             needle = QPainterPath()
@@ -1952,6 +1965,7 @@ class NexusEngine(QObject):
         self.eq = dict(win.cfg.get("eq") or {})
         self.vis_ring = np.zeros(8192, np.float32)       # last few thousand output samples (mono) for visualizers
         self.vis_w = 0
+        self.jam_sink = None                              # listen-together: gets every block that's played
         self.last_pos = -1
         self.timer = QTimer(self)
         self.timer.setInterval(50)
@@ -2252,6 +2266,11 @@ class NexusEngine(QObject):
             return
         data = self.buf.pull(frames)
         n = len(data)
+        if n and self.jam_sink is not None:
+            try:
+                self.jam_sink(data[:n], self.stream_rate or 44100)
+            except Exception:
+                pass
         if n:
             try:
                 m = data[:, 0] if data.shape[1] == 1 else (data[:, 0] + data[:, 1]) * 0.5
@@ -8462,6 +8481,877 @@ class DiscoverPage(QWidget):
             box.layout().addWidget(card)
 
 
+# ------------------------------------------------------------------ jam (listen together)
+# the host streams whatever Nexus is playing to friends over WebRTC (Opus 320 kbps, encrypted, peer to peer).
+# connecting uses a short room code: both apps meet on a public ntfy.sh topic derived from the code and swap
+# connection details there, encrypted with a key that's also derived from the code — ntfy only sees noise.
+import base64 as _b64
+import fractions as _fractions
+import zlib as _zlib
+
+JAM_RELAY = os.environ.get("NEXUS_JAM_RELAY", "https://ntfy.sh").rstrip("/")
+JAM_STUN = [u for u in os.environ.get("NEXUS_JAM_STUN", "stun:stun.l.google.com:19302,"
+                                      "stun:stun.cloudflare.com:3478").split(",") if u.strip()]
+JAM_ALPHABET = "ACDEFGHJKMNPQRTUVWXY34679"            # no 0/O, 1/I/L, 2/Z, 5/S, 8/B mix-ups
+JAM_RATE, JAM_FRAME = 48000, 960
+
+
+def jam_available():
+    try:
+        import aiortc  # noqa: F401
+        return np is not None and av is not None, ""
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def jam_new_code():
+    import secrets
+    raw = "".join(secrets.choice(JAM_ALPHABET) for _ in range(6))
+    return raw[:3] + "-" + raw[3:]
+
+
+def jam_norm_code(code):
+    c = re.sub(r"[^A-Za-z0-9]", "", str(code or "")).upper()
+    return c[:3] + "-" + c[3:] if len(c) == 6 else ""
+
+
+class JamCrypto:
+    def __init__(self, code):
+        c = jam_norm_code(code).encode()
+        self.topic = "nexusjam" + hashlib.sha256(b"topic:" + c).hexdigest()[:28]
+        self.key = hashlib.sha256(b"key:nexus-jam:" + c).digest()
+
+    def seal(self, obj):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        nonce = os.urandom(12)
+        ct = AESGCM(self.key).encrypt(nonce, _zlib.compress(json.dumps(obj).encode(), 9), None)
+        return _b64.urlsafe_b64encode(nonce + ct).decode()
+
+    def open(self, text):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        raw = _b64.urlsafe_b64decode(text.encode())
+        return json.loads(_zlib.decompress(AESGCM(self.key).decrypt(raw[:12], raw[12:], None)))
+
+
+class JamSource:
+    """takes the engine's output (any rate, float stereo) on the audio thread, hands out 20 ms 48 kHz frames."""
+
+    def __init__(self):
+        self.q = collections.deque(maxlen=400)
+        self.res, self.res_rate = None, None
+        self.buf = np.zeros(0, np.int16) if np is not None else None
+
+    def push(self, data, rate):                       # audio thread
+        self.q.append((int(rate), np.ascontiguousarray(data, dtype=np.float32)))
+
+    def pull(self):                                   # asyncio thread → int16 (JAM_FRAME*2,) interleaved
+        while self.q:
+            rate, arr = self.q.popleft()
+            if rate != self.res_rate:
+                self.res = av.AudioResampler(format="s16", layout="stereo", rate=JAM_RATE)
+                self.res_rate = rate
+            fr = av.AudioFrame.from_ndarray(arr.reshape(1, -1), format="flt", layout="stereo")
+            fr.sample_rate = rate
+            for o in self.res.resample(fr):
+                self.buf = np.concatenate([self.buf, o.to_ndarray().reshape(-1)])
+        need = JAM_FRAME * 2
+        if len(self.buf) > JAM_RATE * 2 * 0.6:        # running behind: drop to keep the delay short
+            self.buf = self.buf[-JAM_RATE:]
+        if len(self.buf) >= need:
+            out, self.buf = self.buf[:need], self.buf[need:]
+            return out
+        out = np.zeros(need, np.int16)
+        out[:len(self.buf)] = self.buf
+        self.buf = self.buf[:0]
+        return out
+
+
+def _jam_track_class():
+    from aiortc import MediaStreamTrack
+
+    class JamTrack(MediaStreamTrack):
+        kind = "audio"
+
+        def __init__(self, source):
+            super().__init__()
+            self.source, self.pts, self.t0 = source, 0, None
+
+        async def recv(self):
+            import asyncio
+            if self.t0 is None:
+                self.t0 = _time.monotonic()
+            wait = self.t0 + self.pts / JAM_RATE - _time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            pcm = self.source.pull()
+            fr = av.AudioFrame.from_ndarray(pcm.reshape(1, -1), format="s16", layout="stereo")
+            fr.sample_rate = JAM_RATE
+            fr.pts = self.pts
+            fr.time_base = _fractions.Fraction(1, JAM_RATE)
+            self.pts += JAM_FRAME
+            return fr
+    return JamTrack
+
+
+def _better_opus():
+    """aiortc sends 96 kbps 'voip' opus — fine for calls, not for music. 320 kbps, music mode."""
+    try:
+        from aiortc.codecs import opus
+        if getattr(opus.OpusEncoder, "_nexus", False):
+            return
+        orig = opus.OpusEncoder.__init__
+
+        def init(self):
+            orig(self)
+            self.codec = av.CodecContext.create("libopus", "w")
+            self.codec.bit_rate = 320000
+            self.codec.format = "s16"
+            self.codec.layout = "stereo"
+            self.codec.options = {"application": "audio"}
+            self.codec.sample_rate = opus.SAMPLE_RATE
+            self.codec.time_base = opus.TIME_BASE
+        opus.OpusEncoder.__init__ = init
+        opus.OpusEncoder._nexus = True
+    except Exception:
+        pass
+
+
+class JamOutput:
+    """guest side: plays the received stream on its own output, with a small buffer against hiccups."""
+
+    def __init__(self, volume=1.0):
+        self.buf = PCMBuffer()
+        self.volume, self.started, self.stream = volume, False, None
+        self.level = 0.0
+
+    def push(self, x):
+        self.buf.push(x)
+        if not self.started and self.buf.frames >= JAM_RATE * 0.3:
+            self.started = True
+            if sd is None:
+                self.stream = _NullStream(samplerate=JAM_RATE, callback=self._cb)
+            else:
+                self.stream = sd.OutputStream(samplerate=JAM_RATE, channels=2, dtype="float32",
+                                              callback=self._cb, latency="high")
+            self.stream.start()
+
+    def _cb(self, outdata, frames, _t, _s):
+        data = self.buf.pull(frames)
+        n = len(data)
+        if n:
+            y = data * np.float32(self.volume)
+            np.clip(y, -1, 1, out=y)
+            outdata[:n] = y
+            self.level = float(np.abs(y).max())
+        if n < frames:
+            outdata[n:] = 0
+
+    def close(self):
+        s, self.stream = self.stream, None
+        if s is not None:
+            try:
+                s.stop()
+                s.close()
+            except Exception:
+                pass
+
+
+class JamService(QObject):
+    """runs the jam on its own asyncio thread. ui talks to it with plain method calls; it answers with signals."""
+    state = Signal(str, str)          # state, detail
+    got = Signal(dict)                # messages from the other side (np / chat / lib / queue / people / add)
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.loop = self.thread = None
+        self.role, self.code, self.crypto = "off", "", None
+        self.me = uuid.uuid4().hex[:10]
+        self.pcs, self.chans, self.names = {}, {}, {}
+        self.source = JamSource() if np is not None else None
+        self.relay = self.track = None
+        self.output = None
+        self.host_name = ""
+        self.stop_ev = None
+
+    # ---- thread plumbing
+    def _ensure_loop(self):
+        if self.thread is not None and self.thread.is_alive():
+            return
+        import asyncio
+        ready = threading.Event()
+
+        def run():
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            ready.set()
+            self.loop.run_forever()
+        self.thread = threading.Thread(target=run, daemon=True, name="jam")
+        self.thread.start()
+        ready.wait(5)
+
+    def _go(self, coro_fn, *a):
+        import asyncio
+        self._ensure_loop()
+        return asyncio.run_coroutine_threadsafe(coro_fn(*a), self.loop)
+
+    def name(self):
+        return (self.win.cfg.get("jam_name") or self.win.cfg.get("slsk_user") or os.environ.get("USERNAME")
+                or os.environ.get("USER") or "friend")[:24]
+
+    # ---- relay (ntfy) — blocking calls run in worker threads
+    def _publish(self, obj):
+        data = self.crypto.seal(obj).encode()
+        req = urllib.request.Request(f"{JAM_RELAY}/{self.crypto.topic}", data=data, method="POST",
+                                     headers={"User-Agent": f"Nexus/{VERSION}", "Firebase": "no"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read()
+
+    def _listen(self, on_msg):
+        """streams the topic; calls on_msg(dict) for every message meant for us. returns when stopped."""
+        while self.stop_ev is not None and not self.stop_ev.is_set():
+            try:
+                req = urllib.request.Request(f"{JAM_RELAY}/{self.crypto.topic}/json?since={int(_time.time()) - 5}",
+                                             headers={"User-Agent": f"Nexus/{VERSION}"})
+                with urllib.request.urlopen(req, timeout=70) as r:
+                    for line in r:
+                        if self.stop_ev is None or self.stop_ev.is_set():
+                            return
+                        try:
+                            ev = json.loads(line.decode("utf-8"))
+                        except ValueError:
+                            continue
+                        text = ev.get("message")
+                        if ev.get("event") != "message" or not text:
+                            continue
+                        if ev.get("attachment") and ev["attachment"].get("url"):
+                            with urllib.request.urlopen(ev["attachment"]["url"], timeout=15) as a:
+                                text = a.read().decode()
+                        try:
+                            msg = self.crypto.open(text)
+                        except Exception:
+                            continue                     # someone else's noise
+                        if msg.get("from") != self.me and msg.get("to") in (None, self.me):
+                            on_msg(msg)
+            except Exception:
+                if self.stop_ev is not None and not self.stop_ev.is_set():
+                    _time.sleep(2)
+
+    def _ice(self):
+        from aiortc import RTCConfiguration, RTCIceServer
+        return RTCConfiguration(iceServers=[RTCIceServer(urls=JAM_STUN)] if JAM_STUN else [])
+
+    # ---- hosting
+    def host(self):
+        ok, why = jam_available()
+        if not ok:
+            self.state.emit("error", f"listen-together needs the aiortc package ({why}) — restart Nexus to install it")
+            return
+        if not isinstance(self.win.player, NexusEngine):
+            self.state.emit("error", "hosting needs the Nexus audio engine (settings → sound)")
+            return
+        self.leave()
+        self.role, self.code = "host", jam_new_code()
+        self.crypto = JamCrypto(self.code)
+        self.stop_ev = threading.Event()
+        _better_opus()
+        from aiortc.contrib.media import MediaRelay
+        self.relay = MediaRelay()
+        self.track = _jam_track_class()(self.source)
+        self.win.player.jam_sink = self.source.push
+        self._go(self._host_main)
+        self.state.emit("hosting", self.code)
+
+    async def _host_main(self):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        inbox = asyncio.Queue()
+        threading.Thread(target=self._listen, args=(lambda m: loop.call_soon_threadsafe(inbox.put_nowait, m),),
+                         daemon=True).start()
+        while self.role == "host":
+            msg = await inbox.get()
+            try:
+                if msg.get("k") == "hello":
+                    await self._host_offer(msg)
+                elif msg.get("k") == "answer" and msg.get("from") in self.pcs:
+                    from aiortc import RTCSessionDescription
+                    await self.pcs[msg["from"]].setRemoteDescription(RTCSessionDescription(msg["sdp"], "answer"))
+                elif msg.get("k") == "bye":
+                    await self._drop(msg.get("from"))
+            except Exception as e:
+                self.state.emit("hosting", f"{self.code}|{type(e).__name__}: {e}")
+
+    async def _host_offer(self, msg):
+        import asyncio
+        from aiortc import RTCPeerConnection
+        peer = msg["from"]
+        if len(self.pcs) >= 4 and peer not in self.pcs:
+            await asyncio.get_running_loop().run_in_executor(None, self._publish, {
+                "k": "full", "from": self.me, "to": peer})
+            return
+        await self._drop(peer)
+        pc = RTCPeerConnection(self._ice())
+        self.pcs[peer] = pc
+        self.names[peer] = str(msg.get("name") or "friend")[:24]
+        pc.addTrack(self.relay.subscribe(self.track, buffered=False))
+        ch = pc.createDataChannel("jam")
+        self.chans[peer] = ch
+
+        @ch.on("open")
+        def _open():
+            self.got.emit({"t": "joined", "peer": peer, "name": self.names[peer]})
+
+        @ch.on("message")
+        def _msg(m):
+            try:
+                d = json.loads(m)
+            except Exception:
+                return
+            d["peer"], d["name"] = peer, self.names.get(peer, "friend")
+            self.got.emit(d)
+
+        @pc.on("connectionstatechange")
+        async def _st():
+            if pc.connectionState in ("failed", "closed"):
+                if self.pcs.get(peer) is pc:
+                    await self._drop(peer)
+                    self.got.emit({"t": "left", "peer": peer, "name": self.names.get(peer, "friend"),
+                                   "failed": pc.connectionState == "failed"})
+        await pc.setLocalDescription(await pc.createOffer())
+        await asyncio.get_running_loop().run_in_executor(None, self._publish, {
+            "k": "offer", "from": self.me, "to": peer, "sdp": pc.localDescription.sdp, "host": self.name()})
+
+    async def _drop(self, peer):
+        pc = self.pcs.pop(peer, None)
+        self.chans.pop(peer, None)
+        if pc is not None:
+            try:
+                await pc.close()
+            except Exception:
+                pass
+
+    def send(self, obj, peer=None, exclude=None):
+        """json to one listener / all listeners (host) or to the host (guest). safe from the ui thread."""
+        if self.loop is None:
+            return
+        text = json.dumps(obj)
+
+        def go():
+            for p, ch in list(self.chans.items()):
+                if (peer is None or p == peer) and p != exclude and ch.readyState == "open":
+                    try:
+                        ch.send(text)
+                    except Exception:
+                        pass
+        self.loop.call_soon_threadsafe(go)
+
+    def kick(self, peer):
+        if self.loop is not None:
+            self.send({"t": "kicked"}, peer)
+            self._go(self._drop, peer)
+
+    # ---- joining
+    def join(self, code):
+        ok, why = jam_available()
+        if not ok:
+            self.state.emit("error", f"listen-together needs the aiortc package ({why}) — restart Nexus to install it")
+            return
+        code = jam_norm_code(code)
+        if not code:
+            self.state.emit("error", "that code doesn't look right — it's 6 letters/numbers like K7Q-M2X")
+            return
+        self.leave()
+        self.role, self.code = "guest", code
+        self.crypto = JamCrypto(code)
+        self.stop_ev = threading.Event()
+        self.output = JamOutput(float(self.win.cfg.get("jam_volume", 0.9)))
+        self.state.emit("joining", code)
+        self._go(self._guest_main)
+
+    async def _guest_main(self):
+        import asyncio
+        from aiortc import RTCPeerConnection, RTCSessionDescription
+        loop = asyncio.get_running_loop()
+        inbox = asyncio.Queue()
+        threading.Thread(target=self._listen, args=(lambda m: loop.call_soon_threadsafe(inbox.put_nowait, m),),
+                         daemon=True).start()
+        await asyncio.sleep(0.8)                                 # let the subscription settle first
+        tries = 0
+        while self.role == "guest":
+            await loop.run_in_executor(None, self._publish, {"k": "hello", "from": self.me, "name": self.name()})
+            try:
+                msg = await asyncio.wait_for(inbox.get(), 12)
+            except asyncio.TimeoutError:
+                tries += 1
+                if tries >= 3:
+                    self.state.emit("error", "no one is hosting with that code (or they closed it)")
+                    self.role = "off"
+                    return
+                continue
+            if msg.get("k") == "full":
+                self.state.emit("error", "that jam is full (4 listeners max)")
+                self.role = "off"
+                return
+            if msg.get("k") != "offer":
+                continue
+            self.host_name = str(msg.get("host") or "host")[:24]
+            pc = RTCPeerConnection(self._ice())
+            self.pcs["host"] = pc
+
+            @pc.on("track")
+            def _track(track):
+                asyncio.ensure_future(self._consume(track))
+
+            @pc.on("datachannel")
+            def _dc(ch):
+                self.chans["host"] = ch
+
+                @ch.on("message")
+                def _m(m):
+                    try:
+                        self.got.emit(json.loads(m))
+                    except Exception:
+                        pass
+                self.state.emit("guest", self.host_name)
+
+            @pc.on("connectionstatechange")
+            async def _st():
+                if pc.connectionState == "failed":
+                    self.state.emit("error", "couldn't connect to the host directly — both of your routers block it. "
+                                             "try again, or one of you switch network (e.g. a phone hotspot)")
+                elif pc.connectionState == "closed" and self.role == "guest":
+                    self.state.emit("ended", "the jam ended")
+
+            await pc.setRemoteDescription(RTCSessionDescription(msg["sdp"], "offer"))
+            await pc.setLocalDescription(await pc.createAnswer())
+            await loop.run_in_executor(None, self._publish, {"k": "answer", "from": self.me, "to": msg["from"],
+                                                             "sdp": pc.localDescription.sdp})
+            return
+
+    async def _consume(self, track):
+        while self.role == "guest":
+            try:
+                fr = await track.recv()
+            except Exception:
+                return
+            x = fr.to_ndarray()
+            if fr.format.is_planar:
+                x = x.T
+            x = x.reshape(-1, len(fr.layout.channels)).astype(np.float32) / 32768.0
+            if x.shape[1] == 1:
+                x = np.repeat(x, 2, axis=1)
+            if fr.sample_rate != JAM_RATE:
+                continue
+            if self.output is not None:
+                self.output.push(x)
+
+    def set_volume(self, v):
+        self.win.cfg["jam_volume"] = v
+        if self.output is not None:
+            self.output.volume = v
+
+    # ---- leaving
+    def leave(self, detail=""):
+        was = self.role
+        if was == "off":
+            return
+        self.role = "off"
+        if self.stop_ev is not None:
+            self.stop_ev.set()
+        if isinstance(self.win.player, NexusEngine):
+            self.win.player.jam_sink = None
+        if self.crypto is not None and self.loop is not None:
+            crypto, me = self.crypto, self.me
+            threading.Thread(target=lambda: self._bye(crypto, me), daemon=True).start()
+        if self.loop is not None:
+            async def close_all():
+                for p in list(self.pcs):
+                    await self._drop(p)
+            try:
+                self._go(close_all).result(5)
+            except Exception:
+                pass
+        if self.output is not None:
+            self.output.close()
+            self.output = None
+        self.pcs, self.chans, self.names = {}, {}, {}
+        self.state.emit("off", detail)
+
+    def _bye(self, crypto, me):
+        try:
+            old, self.crypto = self.crypto, crypto
+            data = crypto.seal({"k": "bye", "from": me})
+            self.crypto = old
+            req = urllib.request.Request(f"{JAM_RELAY}/{crypto.topic}", data=data.encode(), method="POST",
+                                         headers={"User-Agent": f"Nexus/{VERSION}"})
+            urllib.request.urlopen(req, timeout=8).read()
+        except Exception:
+            pass
+
+
+class JamPage(QWidget):
+    """listen together: host (stream what you play) or join (hear a friend's Nexus), with chat and a shared queue."""
+
+    def __init__(self, win):
+        super().__init__(objectName="jampage")
+        self.win = win
+        self.jam = win.jam
+        self.jam.state.connect(self.on_state)
+        self.jam.got.connect(self.on_msg)
+        self.lib = []                    # guest: host's library [(id, title, artist, album, dur)]
+        self.people = {}                 # host: peer → name
+        v = QVBoxLayout(self)
+        v.setContentsMargins(32, 28, 28, 18)
+        v.setSpacing(12)
+        head = QHBoxLayout()
+        tv = QVBoxLayout()
+        tv.addWidget(QLabel("LISTEN TOGETHER", objectName="eyebrow"))
+        tv.addWidget(QLabel("Jam", objectName="h1"))
+        head.addLayout(tv, 1)
+        self.b_leave = win.tbtn("end jam", self.jam.leave, "pill")
+        head.addWidget(self.b_leave, 0, Qt.AlignBottom)
+        v.addLayout(head)
+        self.status = QLabel(objectName="dim")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+        self.stack = QStackedWidget()
+        v.addWidget(self.stack, 1)
+
+        # -- start screen
+        start = QWidget()
+        sl = QHBoxLayout(start)
+        sl.setContentsMargins(0, 8, 0, 0)
+        sl.setSpacing(16)
+        for title, text, btn, fn in (
+                ("Host", "Your friends hear whatever you play, in real time (about a second behind). They can see "
+                         "what's on, chat, and add songs from your library to the queue.", "start a jam", self.host),
+                ("Join", "Got a code from a friend? Type it here to hear their Nexus. Your own music pauses.",
+                 "join", self.join)):
+            card = QWidget(objectName="reccard")
+            card.setAttribute(Qt.WA_StyledBackground, True)
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(22, 20, 22, 20)
+            cl.setSpacing(10)
+            cl.addWidget(QLabel(title, objectName="h2"))
+            t = QLabel(text, objectName="dim")
+            t.setWordWrap(True)
+            cl.addWidget(t)
+            if title == "Join":
+                self.code_in = QLineEdit(objectName="search")
+                self.code_in.setPlaceholderText("code, like K7Q-M2X")
+                self.code_in.returnPressed.connect(self.join)
+                cl.addWidget(self.code_in)
+            else:
+                f = QFormLayout()
+                self.name_in = QLineEdit(self.jam.name())
+                self.name_in.editingFinished.connect(lambda: (self.win.cfg.__setitem__("jam_name", self.name_in.text()
+                                                                                       .strip()), self.win.cfg.save()))
+                f.addRow(win.L("your name"), self.name_in)
+                f.addRow(win.L("friends can add songs"), self._toggle("jam_allow_add"))
+                f.addRow(win.L("friends can skip"), self._toggle("jam_allow_skip"))
+                cl.addLayout(f)
+            cl.addStretch()
+            cl.addWidget(win.tbtn(btn, fn, "pillPrimary"), 0, Qt.AlignLeft)
+            sl.addWidget(card, 1)
+        self.stack.addWidget(start)
+
+        # -- host screen
+        host = QWidget()
+        hl = QHBoxLayout(host)
+        hl.setContentsMargins(0, 8, 0, 0)
+        hl.setSpacing(18)
+        left = QVBoxLayout()
+        left.addWidget(QLabel("YOUR CODE", objectName="eyebrow"))
+        self.code_big = QLabel(objectName="bigtime")
+        self.code_big.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        left.addWidget(self.code_big)
+        crow = QHBoxLayout()
+        crow.addWidget(win.tbtn("copy code", lambda: (QApplication.clipboard().setText(self.jam.code),
+                                                      self.win.toast("code copied — send it to your friend")), "pill"))
+        crow.addWidget(win.tbtn("copy invite", self.copy_invite, "pill"))
+        crow.addStretch()
+        left.addLayout(crow)
+        left.addSpacing(10)
+        left.addWidget(QLabel("LISTENING", objectName="eyebrow"))
+        self.people_list = QListWidget(objectName="col")
+        self.people_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.people_list.customContextMenuRequested.connect(self.people_menu)
+        self.people_list.setMaximumWidth(320)
+        left.addWidget(self.people_list, 1)
+        hl.addLayout(left, 1)
+        hl.addLayout(self._chat_box("host"), 2)
+        self.stack.addWidget(host)
+
+        # -- guest screen
+        guest = QWidget()
+        gl = QHBoxLayout(guest)
+        gl.setContentsMargins(0, 8, 0, 0)
+        gl.setSpacing(18)
+        col = QVBoxLayout()
+        self.g_cover = QLabel()
+        self.g_cover.setFixedSize(220, 220)
+        col.addWidget(self.g_cover)
+        self.g_from = QLabel(objectName="eyebrow")
+        col.addWidget(self.g_from)
+        self.g_title = QLabel(objectName="npBig")
+        self.g_title.setWordWrap(True)
+        self.g_artist = QLabel(objectName="dim")
+        self.g_artist.setWordWrap(True)
+        col.addWidget(self.g_title)
+        col.addWidget(self.g_artist)
+        self.g_bar = TextBar(key="progress_style")
+        self.g_bar.setFixedWidth(220)
+        self.g_bar.restyle(win.cfg, win.c)
+        col.addWidget(self.g_bar)
+        vr = QHBoxLayout()
+        vr.addWidget(QLabel(win.L("volume"), objectName="time"))
+        self.g_vol = TextBar(wheel=True, key="volume_style")
+        self.g_vol.setFixedWidth(140)
+        self.g_vol.restyle(win.cfg, win.c)
+        self.g_vol.set_value(float(win.cfg.get("jam_volume", 0.9)))
+        self.g_vol.changed.connect(lambda f: (self.jam.set_volume(f), self.g_vol.set_value(f)))
+        vr.addWidget(self.g_vol)
+        vr.addStretch()
+        col.addLayout(vr)
+        self.b_skip = win.tbtn("skip", lambda: self.jam.send({"t": "skip"}), "pill")
+        col.addWidget(self.b_skip, 0, Qt.AlignLeft)
+        col.addStretch()
+        gl.addLayout(col)
+        mid = QVBoxLayout()
+        mid.addWidget(QLabel("UP NEXT", objectName="eyebrow"))
+        self.g_queue = QListWidget(objectName="col")
+        self.g_queue.setMaximumHeight(170)
+        mid.addWidget(self.g_queue)
+        self.add_lab = QLabel("ADD FROM THEIR LIBRARY", objectName="eyebrow")
+        mid.addWidget(self.add_lab)
+        self.g_search = QLineEdit(objectName="search")
+        self.g_search.setPlaceholderText("search their songs")
+        self.g_search.textChanged.connect(self.filter_lib)
+        mid.addWidget(self.g_search)
+        self.g_lib = QListWidget(objectName="col")
+        self.g_lib.itemDoubleClicked.connect(self.add_song)
+        self.g_lib.setToolTip("double-click to add to their queue")
+        mid.addWidget(self.g_lib, 1)
+        gl.addLayout(mid, 2)
+        gl.addLayout(self._chat_box("guest"), 2)
+        self.stack.addWidget(guest)
+        self.np_timer = QTimer(self)
+        self.np_timer.setInterval(5000)
+        self.np_timer.timeout.connect(self.broadcast_np)
+        self.on_state(self.jam.role if self.jam.role != "host" else "hosting", self.jam.code)
+
+    def _toggle(self, key):
+        t = ToggleSwitch(self.win)
+        t.setChecked(bool(self.win.cfg.get(key, key == "jam_allow_add")))
+        t.toggled.connect(lambda on: (self.win.cfg.__setitem__(key, on), self.win.cfg.save()))
+        return t
+
+    def _chat_box(self, who):
+        lay = QVBoxLayout()
+        lay.addWidget(QLabel("CHAT", objectName="eyebrow"))
+        lst = QListWidget(objectName="dllist")
+        lst.setWordWrap(True)
+        lay.addWidget(lst, 1)
+        inp = QLineEdit(objectName="search")
+        inp.setPlaceholderText("say something")
+        inp.returnPressed.connect(lambda: self.say(inp))
+        lay.addWidget(inp)
+        setattr(self, f"chat_{who}", lst)
+        return lay
+
+    # ---- actions
+    def host(self):
+        self.win.cfg["jam_name"] = self.name_in.text().strip()
+        self.win.cfg.save()
+        self.jam.host()
+
+    def join(self):
+        if self.win.player.playbackState() == QMediaPlayer.PlayingState:
+            self.win.player.pause()
+        self.jam.join(self.code_in.text())
+
+    def copy_invite(self):
+        QApplication.clipboard().setText(
+            f"join my Nexus jam: open Nexus → Jam (the people icon) → code {self.jam.code}\n"
+            f"don't have Nexus? https://github.com/GameBitBan/Nexus")
+        self.win.toast("invite copied — paste it in Discord")
+
+    def say(self, inp):
+        text = inp.text().strip()
+        if not text:
+            return
+        inp.clear()
+        me = self.jam.name()
+        self.jam.send({"t": "chat", "text": text[:500], "from_name": me})
+        self.chat_line(me, text)
+
+    def chat_line(self, who, text):
+        lst = self.chat_host if self.jam.role == "host" else self.chat_guest
+        lst.addItem(f"{who}:  {text}")
+        lst.scrollToBottom()
+
+    def people_menu(self, pos):
+        it = self.people_list.itemAt(pos)
+        if not it:
+            return
+        peer = it.data(Qt.UserRole)
+        m = QMenu(self)
+        m.addAction(self.win.L("remove from jam"), lambda: self.jam.kick(peer))
+        m.exec(self.people_list.viewport().mapToGlobal(pos))
+
+    def add_song(self, it):
+        tid = it.data(Qt.UserRole)
+        if tid is not None:
+            self.jam.send({"t": "add", "id": tid})
+            self.win.toast(f"asked to add “{it.text().split('  —  ')[0]}”")
+
+    def filter_lib(self, text=""):
+        self.g_lib.clear()
+        words = text.lower().split()
+        n = 0
+        for tid, title, artist, album, _dur in self.lib:
+            hay = f"{title} {artist} {album}".lower()
+            if all(w in hay for w in words):
+                it = QListWidgetItem(f"{title}  —  {artist}")
+                it.setData(Qt.UserRole, tid)
+                self.g_lib.addItem(it)
+                n += 1
+                if n >= 300:
+                    break
+
+    # ---- host: tell listeners what's on
+    def library_payload(self):
+        self.lib_ids = {i: t["path"] for i, t in enumerate(self.win.tracks)}
+        items = [[i, t["title"], t["artist"], t["album"], int(t["duration"])] for i, t in enumerate(self.win.tracks)]
+        return [items[i:i + 250] for i in range(0, len(items), 250)]
+
+    def np_payload(self, with_cover=True):
+        w = self.win
+        t = w.queue[w.qi] if 0 <= w.qi < len(w.queue) else None
+        d = {"t": "np", "playing": w.player.playbackState() == QMediaPlayer.PlayingState,
+             "pos": int(w.player.position()), "dur": int(w.dur or 0)}
+        if t:
+            d.update(title=t["title"], artist=t["artist"], album=t["album"], fmt=quality(t))
+            if with_cover:
+                pm = w.covers.get(t["cover"], 220)
+                ba = QByteArray()
+                buf = QBuffer(ba)
+                buf.open(QIODevice.WriteOnly)
+                pm.toImage().scaled(220, 220, Qt.KeepAspectRatio, Qt.SmoothTransformation).save(buf, "JPG", 80)
+                d["cover"] = _b64.b64encode(bytes(ba)).decode()
+        d["queue"] = [[x["title"], x["artist"]] for x in w.queue[w.qi + 1: w.qi + 9]] if t else []
+        return d
+
+    def broadcast_np(self, with_cover=False):
+        if self.jam.role == "host" and self.jam.chans:
+            self.jam.send(self.np_payload(with_cover))
+
+    def track_changed(self):
+        self.broadcast_np(True)
+
+    # ---- signals from the jam thread
+    def on_state(self, st, detail):
+        r = self.win.L
+        if st in ("ended", "error") and self.jam.role == "guest":
+            QTimer.singleShot(0, lambda: self.jam.leave(detail))        # tidy up (closes the audio output too)
+            if st == "ended":
+                return
+        self.b_leave.setVisible(st in ("hosting", "joining", "guest"))
+        if st == "hosting":
+            code, _, err = (detail or "").partition("|")
+            self.stack.setCurrentIndex(1)
+            self.code_big.setText(code)
+            self.status.setText(r(err or "send this code to your friend — they open Nexus → Jam → Join. "
+                                         "they'll hear whatever you play"))
+            self.np_timer.start()
+            self.refresh_people()
+        elif st == "joining":
+            self.stack.setCurrentIndex(0)
+            self.status.setText(r(f"connecting to {detail}…"))
+        elif st == "guest":
+            self.stack.setCurrentIndex(2)
+            self.g_from.setText(r(f"LISTENING WITH {detail}").upper())
+            self.status.setText(r("connected — music starts in a moment"))
+            self.jam.send({"t": "hello", "name": self.jam.name()})
+        elif st == "error":
+            self.stack.setCurrentIndex(0)
+            self.status.setText(r(detail))
+            self.win.toast(detail[:140])
+        else:
+            self.stack.setCurrentIndex(0)
+            self.np_timer.stop()
+            self.status.setText(r(detail or "listen together with a friend — one of you hosts, the other joins"))
+        self.win.update_jam_badge()
+
+    def refresh_people(self):
+        self.people_list.clear()
+        for peer, name in self.people.items():
+            it = QListWidgetItem(name)
+            it.setData(Qt.UserRole, peer)
+            self.people_list.addItem(it)
+        if not self.people:
+            self.people_list.addItem(self.win.L("nobody yet…"))
+
+    def on_msg(self, d):
+        w, t = self.win, d.get("t")
+        if self.jam.role == "host":
+            peer, name = d.get("peer"), d.get("name", "friend")
+            if t == "joined":
+                self.people[peer] = name
+                self.refresh_people()
+                w.toast(f"{name} joined your jam")
+                for part in self.library_payload():
+                    self.jam.send({"t": "lib", "items": part}, peer)
+                self.jam.send({"t": "perm", "add": bool(w.cfg.get("jam_allow_add", True)),
+                               "skip": bool(w.cfg.get("jam_allow_skip", False))}, peer)
+                self.jam.send(self.np_payload(True), peer)
+            elif t == "left":
+                self.people.pop(peer, None)
+                self.refresh_people()
+                w.toast(f"{name} " + ("lost the connection" if d.get("failed") else "left"))
+            elif t == "chat":
+                self.chat_line(d.get("from_name") or name, d.get("text", ""))
+                self.jam.send({"t": "chat", "text": d.get("text", ""), "from_name": d.get("from_name") or name},
+                              exclude=peer)
+            elif t == "add" and w.cfg.get("jam_allow_add", True):
+                path = getattr(self, "lib_ids", {}).get(d.get("id"))
+                tr = w.by_path.get(path)
+                if tr:
+                    w.queue_add([tr])
+                    w.toast(f"{name} added “{tr['title']}”")
+                    self.chat_line("♪", f"{name} added {tr['title']} — {tr['artist']}")
+                    self.broadcast_np(False)
+            elif t == "skip" and w.cfg.get("jam_allow_skip", False):
+                w.toast(f"{name} skipped")
+                w.next()
+            return
+        # guest
+        if t == "np":
+            self.g_title.setText(d.get("title") or w.L("nothing playing"))
+            self.g_artist.setText(" — ".join(x for x in (d.get("artist"), d.get("album")) if x))
+            if d.get("cover"):
+                img = QImage()
+                img.loadFromData(_b64.b64decode(d["cover"]))
+                self.g_cover.setPixmap(QPixmap.fromImage(img).scaled(220, 220, Qt.KeepAspectRatio,
+                                                                     Qt.SmoothTransformation))
+            self.g_bar.set_value(d["pos"] / d["dur"] if d.get("dur") else 0)
+            self.g_queue.clear()
+            for title, artist in d.get("queue", []):
+                self.g_queue.addItem(f"{title}  —  {artist}")
+        elif t == "lib":
+            self.lib += [tuple(x) for x in d.get("items", [])]
+            self.filter_lib(self.g_search.text())
+        elif t == "perm":
+            for wdg in (self.add_lab, self.g_search, self.g_lib):
+                wdg.setVisible(bool(d.get("add")))
+            self.b_skip.setVisible(bool(d.get("skip")))
+        elif t == "chat":
+            self.chat_line(d.get("from_name", "?"), d.get("text", ""))
+        elif t == "kicked":
+            self.jam.leave("the host removed you from the jam")
+            w.toast("the host removed you from the jam")
+
+
 # ------------------------------------------------------------------ settings
 class Settings(QWidget):
     def __init__(self, win):
@@ -9272,6 +10162,7 @@ QListWidget#settingsnav::item:selected {{ background: {c['select']}; color: {c['
 QLabel#formlabel {{ color: {c['text']}; }}
 QWidget#reccard {{ background: {c['select']}; border-radius: {min(r, 14)}px; }}
 QWidget#detailbox {{ background: {c['select']}; border-radius: {min(r, 14)}px; }}
+QLabel#bigtime[jam="1"] {{ letter-spacing: 4px; }}
 QLabel#coverdrop {{ background: {c['select']}; border-radius: {min(r, 12)}px; color: {c['dim']}; }}
 QWidget#onlinebox {{ background: {c['select']}; border-radius: {min(r, 12)}px; }}
 QTableWidget#tagtable::item {{ padding: 0 8px; }}
@@ -9350,10 +10241,12 @@ class Main(QMainWindow):
         self.player.positionChanged.connect(self.on_position)
         self.player.durationChanged.connect(self.on_duration)
         self.player.mediaStatusChanged.connect(self.on_status)
-        self.player.playbackStateChanged.connect(lambda _s: (self.update_controls(), self.push_presence()))
+        self.player.playbackStateChanged.connect(lambda _s: (self.update_controls(), self.push_presence(),
+                                                             self.jam_state_changed()))
         self.player.errorOccurred.connect(self.on_error)
 
         self.analyzer = Analyzer(self)
+        self.jam = JamService(self)
         self.immersive, self._imm_restore = False, None
         self.build_ui()
         self.setWindowTitle(APP_NAME)
@@ -9508,13 +10401,15 @@ class Main(QMainWindow):
         self.vis_page = VisualizerPage(self)
         self.tag_page = TagEditorPage(self)
         self.discover_page = DiscoverPage(self)
-        self.pages = {"visualizer": self.vis_page, "tags": self.tag_page, "discover": self.discover_page, "browse": self.browser, "albums": albums_page, "artists": self.artists_page,
+        self.jam_page = JamPage(self)
+        self.pages = {"visualizer": self.vis_page, "tags": self.tag_page, "discover": self.discover_page,
+                      "jam": self.jam_page, "browse": self.browser, "albums": albums_page, "artists": self.artists_page,
                       "songs": songs_page, "queue": self.queue_page, "album": self.collection,
                       "playlist": self.collection, "lyrics": self.lyrics_page, "download": self.download_page,
                       "inspect": self.inspect_page}
         for w in (self.browser, albums_page, self.artists_page, songs_page, self.queue_page, self.collection,
                   self.lyrics_page, self.download_page, self.inspect_page, self.vis_page, self.tag_page,
-                  self.discover_page):
+                  self.discover_page, self.jam_page):
             self.stack.addWidget(w)
 
     def make_search(self):
@@ -9574,6 +10469,7 @@ class Main(QMainWindow):
         for key, kind, tip in (("albums", "grid", "albums  (ctrl+1)"), ("browse", "columns", "browse  (ctrl+2)"),
                                ("songs", "list", "songs  (ctrl+3)"), ("queue", "queue", "queue  (ctrl+4)"),
                                ("discover", "discover", "discover  (ctrl+5)"),
+                               ("jam", "jam", "listen together  (ctrl+j)"),
                                ("download", "download", "download  (ctrl+d)")):
             b = IconButton(self, kind, 44)
             b.rail = True
@@ -9632,7 +10528,7 @@ class Main(QMainWindow):
         self.brand = QLabel(objectName="brand")
         sl.addWidget(self.brand)
         sl.addSpacing(22)
-        for key in ("albums", "browse", "artists", "songs", "queue", "discover", "download"):
+        for key in ("albums", "browse", "artists", "songs", "queue", "discover", "jam", "download"):
             b = QPushButton(objectName="nav")
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
@@ -9840,6 +10736,7 @@ class Main(QMainWindow):
         sc("Ctrl+3", lambda: self.go("songs"))
         sc("Ctrl+4", lambda: self.go("queue"))
         sc("Ctrl+5", lambda: self.go("discover"))
+        sc("Ctrl+J", lambda: self.go("jam"))
         sc("Ctrl+E", self.open_eq)
         sc("Ctrl+L", self.toggle_lyrics)
         sc("Ctrl+D", lambda: self.go("download"))
@@ -10005,6 +10902,19 @@ class Main(QMainWindow):
                 self.go("settings", "skins", push=False)
             self.toast(f"skin “{name}” installed")
         QTimer.singleShot(0, done)
+
+    def jam_state_changed(self):
+        if getattr(self, "jam", None) is not None and self.jam.role == "host" and hasattr(self, "jam_page"):
+            self.jam_page.broadcast_np(False)
+        if getattr(self, "jam", None) is not None and self.jam.role == "guest" and \
+                self.player.playbackState() == QMediaPlayer.PlayingState:
+            self.toast("you're in a jam — your own music plays over it", "leave jam", self.jam.leave)
+
+    def update_jam_badge(self):
+        b = self.nav.get("jam") if hasattr(self, "nav") else None
+        if isinstance(b, IconButton):
+            b.setToolTip({"host": f"jam: hosting · code {self.jam.code}", "guest": "jam: listening along"}
+                         .get(self.jam.role, "listen together  (ctrl+j)"))
 
     def search_soulseek(self, query):
         self.go("download")
@@ -10380,6 +11290,8 @@ class Main(QMainWindow):
         self.np_quality.setVisible(bool(quality(t)) and not self.cfg.get("now_panel", True))
         self.now_panel.set_track(t)
         self.root.set_cover(t["cover"])
+        if self.jam.role == "host":
+            self.jam_page.track_changed()
         if self.page == "visualizer":
             self.vis_page.set_track(t)
         self.setWindowTitle(f"{t['title']} — {t['artist']}")
@@ -10941,6 +11853,10 @@ class Main(QMainWindow):
         if isinstance(self.player, NexusEngine):
             self.player.shutdown()
         self.soulseek.stop(wait=8)
+        try:
+            self.jam.leave()
+        except Exception:
+            pass
         if self.cfg.get("discord_enabled"):
             self.discord.clear()
         self.discord.shutdown()
