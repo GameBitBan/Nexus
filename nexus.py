@@ -68,9 +68,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.15.0"
+VERSION = "1.15.1"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
-DISCORD_APP_ID = ""         # Nexus's own discord app: lets anyone show what they're playing without making one
+DISCORD_APP_ID = "1566983013445931018"  # Nexus's own discord app: lets anyone show what they're playing without making one
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
              ".dsf", ".opus", ".ogg", ".oga", ".mp3", ".mp4", ".aac"}
@@ -10779,8 +10779,9 @@ class Settings(QWidget):
         fdc.addRow(how)
         fdc.addRow("show on discord", self.check("discord_enabled", rebuild=False))
         cid = self.line("discord_client_id")
-        cid.setPlaceholderText("application id, e.g. 1234567890123456789")
-        fdc.addRow("application id", cid)
+        cid.setPlaceholderText("empty = Nexus's built-in app")
+        cid.setToolTip("only if you made your own discord app (to change the name or art friends see)")
+        fdc.addRow("own app id (optional)", cid)
         fdc.addRow("song title in status", self.check("discord_song_in_status", rebuild=False))
         fdc.addRow("hide when paused", self.check("discord_hide_paused", rebuild=False))
         fdc.addRow("show album cover", self.check("discord_cover_lookup", rebuild=False))

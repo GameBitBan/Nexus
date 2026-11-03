@@ -105,7 +105,7 @@ Nexus matches every song against your library (forgiving about *Remastered*, *fe
 
 ## discord ("Listening to Nexus")
 
-Shows your friends what you're playing, Spotify-style: song, artist, album cover and a progress bar. Settings → **discord**:
+Shows your friends what you're playing, Spotify-style: song, artist, album cover and a progress bar. Nexus has its own Discord app built in, so anyone just ticks **settings → discord → show on discord** (Nexus also offers it once when it sees Discord running). To use your own app name/art instead, settings → **discord**:
 1. Go to [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application** → name it `Nexus`. That name is what friends see.
 2. Copy its **Application ID** into Nexus and tick **show on discord**.
 3. Optional: under *Rich Presence → Art Assets*, upload `icons/nexus-1024.png` and put its asset name (e.g. `nexus`) in Nexus → *fallback image asset*. It shows as the fallback image and as the little badge on the cover.
