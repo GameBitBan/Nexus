@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.12.1"
+VERSION = "1.12.2"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -7620,7 +7620,7 @@ class NetImages(QObject):
         self.dir = win.dir / "discover_img"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.mem = {}
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures.thread import ThreadPoolExecutor   # (not concurrent.futures: python 3.15 + PySide6 breaks that lazy import)
         self.pool = ThreadPoolExecutor(max_workers=4)
 
     def get(self, url):
@@ -10194,6 +10194,8 @@ class Main(QMainWindow):
         self.update_controls()
 
     def on_position(self, ms):
+        if not hasattr(self, "seek"):          # ui not built (yet)
+            return
         if ms > 0:
             self.errors = 0
         if not self._counted and self.dur and self.current_path and ms >= min(30000, self.dur * 0.5):
