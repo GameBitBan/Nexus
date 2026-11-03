@@ -48,6 +48,16 @@ The **Nexus audio engine** (default) decodes with FFmpeg and outputs through Por
 
 If the engine's packages (numpy, av, sounddevice) can't load, Nexus falls back to the basic Qt player and says so in settings → sound.
 
+## discover
+
+The compass in the rail (`ctrl+5`) recommends music from what you already have:
+- **your top artists**: who you play most (Nexus counts a play after 30 s, or half of a short song), then who you own the most of.
+- **artists you might like**: artists similar to several of yours, from Deezer's free public API (only artist names are sent). Each shows who it's *like*; ▶ plays a 30-second preview (your music pauses and comes back after), ⤓ searches Soulseek for them, *songs* opens their top tracks.
+- **albums you don't have yet**: newer or older albums and EPs from artists in your library that aren't in it. ⤓ searches Soulseek for that album.
+- **rediscover**: albums from your own library you haven't played in a month or more.
+
+Results are cached and refresh every few days, or hit *refresh*.
+
 ## visualizer & glow
 
 - **visualizer** (`ctrl+b` or the bars icon in the player bar): full-window spectrum over a slowly moving blur of the cover. Styles: **dots** (Nothing-style dot matrix), **bars**, **mirror**, **wave** (oscilloscope), **ring** (cover in the middle, dots radiating out). **mono** / **cover colour** switches between the theme colour and a colour picked from the album art. **Immersive** (or double-click it) hides everything else and goes full screen; `esc` comes back.
@@ -218,7 +228,7 @@ Config: `~/.config/nexus/config.json` (Windows: `%APPDATA%\nexus`). `NEXUS_HOME=
 | ctrl s / ctrl r | shuffle / repeat |
 | ctrl f or `/` | search |
 | esc | clear search |
-| ctrl 1–4 | albums / browse / songs / queue |
+| ctrl 1–5 | albums / browse / songs / queue / discover |
 | alt ← | back |
 | ctrl e | equalizer |
 | ctrl b | visualizer (esc leaves immersive) |

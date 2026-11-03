@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.10.2"
+VERSION = "1.11.0"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -117,7 +117,7 @@ COLS = OrderedDict([("#", "#"), ("title", "title"), ("artist", "artist"),
                     ("album", "album"), ("year", "year"), ("genre", "genre"),
                     ("duration", "time"), ("format", "format")])
 
-PAGES = ("tags", "visualizer", "albums", "artists", "songs", "queue", "album", "playlist", "browse", "settings", "eq", "lyrics", "download",
+PAGES = ("discover", "tags", "visualizer", "albums", "artists", "songs", "queue", "album", "playlist", "browse", "settings", "eq", "lyrics", "download",
          "inspect")
 
 DEFAULTS = {
@@ -782,7 +782,7 @@ class IconButton(QPushButton):
         return self.win.B({"back": "<", "volume": "vol", "mute": "mute", "columns": "browse", "grid": "albums",
                            "list": "songs", "plus": "+", "search": "/", "gear": "settings",
                            "refresh": "rescan", "panel": "panel", "eq": "eq", "lyrics": "lyrics", "download": "download",
-                           "vis": "vis"}.get(self.kind, self.kind))
+                           "vis": "vis", "discover": "discover"}.get(self.kind, self.kind))
 
     def relayout(self):
         if self.win.cfg.get("control_style") == "text":
@@ -798,7 +798,7 @@ class IconButton(QPushButton):
             self.relayout()
 
     EXTRA = {"columns", "grid", "list", "queue", "plus", "home", "search", "gear", "refresh", "panel", "eq", "lyrics",
-             "download", "vis"}
+             "download", "vis", "discover"}
 
     def draw_extra(self, p, cx, cy, s, col):
         pen = QPen(col, max(1.6, s / 17), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
@@ -893,6 +893,17 @@ class IconButton(QPushButton):
                 p.drawLine(QPointF(x, cy - s * 0.2), QPointF(x, cy + s * 0.2))
                 p.setBrush(QColor(self.win.c["panel"]) if not self.rail else Qt.NoBrush)
                 p.drawEllipse(QRectF(x - s * 0.05, cy + s * ky - s * 0.05, s * 0.1, s * 0.1))
+        elif k == "discover":                          # compass
+            p.drawEllipse(QPointF(cx, cy), s * 0.22, s * 0.22)
+            needle = QPainterPath()
+            needle.moveTo(cx + s * 0.1, cy - s * 0.1)
+            needle.lineTo(cx + s * 0.035, cy + s * 0.035)
+            needle.lineTo(cx - s * 0.1, cy + s * 0.1)
+            needle.lineTo(cx - s * 0.035, cy - s * 0.035)
+            needle.closeSubpath()
+            p.setBrush(col)
+            p.drawPath(needle)
+            p.setBrush(Qt.NoBrush)
         elif k == "vis":
             for dx, hh in ((-0.18, 0.16), (-0.06, 0.34), (0.06, 0.24), (0.18, 0.4)):
                 x = cx + s * dx
@@ -7163,6 +7174,645 @@ class SkinsTab(QWidget):
         self.fill()
 
 
+# ------------------------------------------------------------------ discover (recommendations)
+# looks at who's in your library (and what you actually play), asks Deezer's free public API who's similar,
+# and shows artists you don't have yet, albums you're missing from artists you do have, and stuff to rediscover.
+DEEZER = "https://api.deezer.com"
+_SKIP_ARTISTS = {"unknown artist", "various artists", "various", "va", ""}
+
+
+def deezer_get(path, tries=3):
+    url = path if path.startswith("http") else DEEZER + path
+    for i in range(tries):
+        req = urllib.request.Request(url, headers={"User-Agent": f"Nexus/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        err = d.get("error") if isinstance(d, dict) else None
+        if not err:
+            return d
+        if err.get("code") == 4 and i + 1 < tries:            # quota: 50 requests / 5 s
+            _time.sleep(1.5 * (i + 1))
+            continue
+        raise RuntimeError(err.get("message") or "deezer error")
+    return {}
+
+
+def _norm_name(s):
+    return re.sub(r"[^\w]+", " ", str(s or "").lower().replace("$", "s")).strip()
+
+
+class Discover:
+    """the recommendation engine (runs on a worker thread)."""
+
+    def __init__(self, win):
+        self.win = win
+        self.cache_file = win.dir / "discover.json"
+
+    def load(self):
+        try:
+            return json.loads(self.cache_file.read_text("utf-8"))
+        except Exception:
+            return None
+
+    def library_artists(self):
+        """[(name, weight, albums, tracks, plays)] best first — plays count most, then how much you own."""
+        stats = self.win.stats
+        by = {}
+        for t in self.win.tracks:
+            a = t["albumartist"] or t["artist"]
+            if _norm_name(a) in _SKIP_ARTISTS:
+                continue
+            e = by.setdefault(a, {"albums": set(), "tracks": 0, "plays": 0})
+            e["albums"].add(t["album_key"])
+            e["tracks"] += 1
+            e["plays"] += int(stats.get(t["path"], {}).get("plays", 0))
+        out = [(a, e["plays"] * 2 + len(e["albums"]) * 3 + e["tracks"] * 0.3, len(e["albums"]), e["tracks"], e["plays"])
+               for a, e in by.items()]
+        out.sort(key=lambda x: -x[1])
+        return out
+
+    def find_artist(self, name):
+        d = deezer_get("/search/artist?" + urllib.parse.urlencode({"q": name, "limit": 6}))
+        want = _norm_name(name)
+        res = d.get("data") or []
+        for a in res:
+            if _norm_name(a.get("name")) == want:
+                return a
+        for a in res:
+            n = _norm_name(a.get("name"))
+            if len(want) >= 4 and (want in n or n in want):
+                return a
+        return None
+
+    def run(self, progress=lambda *_: None, seeds_n=15):
+        lib = self.library_artists()
+        have = {_norm_name(a) for a, *_ in lib}
+        for t in self.win.tracks:
+            have.add(_norm_name(t["artist"]))
+        lib_albums = {}
+        for t in self.win.tracks:
+            lib_albums.setdefault(_norm_name(t["albumartist"]), set()).add(DiscordPresence._norm(t["album"]))
+        seeds = []
+        for i, (name, w, albums, tracks, plays) in enumerate(lib[:seeds_n]):
+            progress(f"looking up {name}…", i, seeds_n * 2)
+            try:
+                a = self.find_artist(name)
+            except Exception:
+                a = None
+            if a:
+                seeds.append({"name": name, "id": a["id"], "picture": a.get("picture_medium", ""),
+                              "albums": albums, "tracks": tracks, "plays": plays, "weight": w})
+        if not seeds:
+            raise RuntimeError("couldn't find any of your artists on Deezer (or no internet)")
+        scores, because, info = {}, {}, {}
+        top_w = max(s["weight"] for s in seeds) or 1
+        for i, s in enumerate(seeds):
+            progress(f"who sounds like {s['name']}…", seeds_n + i, seeds_n * 2)
+            try:
+                rel = deezer_get(f"/artist/{s['id']}/related?limit=25").get("data") or []
+            except Exception:
+                rel = []
+            sw = 0.5 + s["weight"] / top_w
+            for rank, r in enumerate(rel):
+                if _norm_name(r.get("name")) in have:
+                    continue
+                rid = r["id"]
+                scores[rid] = scores.get(rid, 0) + sw / (1 + rank * 0.12)
+                because.setdefault(rid, [])
+                if s["name"] not in because[rid]:
+                    because[rid].append(s["name"])
+                info[rid] = r
+        ranked = sorted(scores, key=lambda k: -(scores[k] * (1 + 0.15 * math.log10(1 + (info[k].get("nb_fan") or 0)))))
+        recs = []
+        for rid in ranked[:18]:
+            r = info[rid]
+            try:
+                top = deezer_get(f"/artist/{rid}/top?limit=5").get("data") or []
+            except Exception:
+                top = []
+            recs.append({"id": rid, "name": r.get("name", ""), "picture": r.get("picture_big") or r.get("picture_medium", ""),
+                         "fans": r.get("nb_fan") or 0, "because": because[rid][:3],
+                         "top": [{"title": x.get("title", ""), "preview": x.get("preview", ""), "tid": x.get("id"),
+                                  "album": (x.get("album") or {}).get("title", ""),
+                                  "cover": (x.get("album") or {}).get("cover_medium", ""),
+                                  "duration": x.get("duration") or 0} for x in top]})
+            progress(f"getting {r.get('name')}'s top songs…", len(recs), 18)
+        missing = []
+        for s in seeds[:10]:
+            try:
+                albs = deezer_get(f"/artist/{s['id']}/albums?limit=60").get("data") or []
+            except Exception:
+                continue
+            mine = lib_albums.get(_norm_name(s["name"]), set())
+            seen, got = set(), 0
+            for a in sorted(albs, key=lambda x: x.get("release_date") or "", reverse=True):
+                if a.get("record_type") not in ("album", "ep"):
+                    continue
+                n = DiscordPresence._norm(a.get("title"))
+                if not n or n in seen or n in mine or any(n in m or m in n for m in mine if len(m) > 3):
+                    continue
+                seen.add(n)
+                missing.append({"artist": s["name"], "title": a.get("title", ""), "year": (a.get("release_date") or "")[:4],
+                                "type": a.get("record_type", "album"), "cover": a.get("cover_medium", ""),
+                                "have": s["albums"]})
+                got += 1
+                if got >= 3:
+                    break
+        missing.sort(key=lambda x: x["year"], reverse=True)
+        out = {"time": _time.time(), "seeds": [{k: s[k] for k in ("name", "picture", "albums", "tracks", "plays")}
+                                               for s in seeds],
+               "recs": recs, "missing": missing[:24]}
+        try:
+            self.cache_file.write_text(json.dumps(out), "utf-8")
+        except OSError:
+            pass
+        return out
+
+
+class NetImages(QObject):
+    """downloads + disk-caches pictures off the ui thread."""
+    ready = Signal(str, QImage)
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.dir = win.dir / "discover_img"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.mem = {}
+        from concurrent.futures import ThreadPoolExecutor
+        self.pool = ThreadPoolExecutor(max_workers=4)
+
+    def get(self, url):
+        """→ QImage now if we have it, else None (and `ready` fires when it arrives)."""
+        if not url:
+            return None
+        if url in self.mem:
+            return self.mem[url]
+        f = self.dir / (hashlib.md5(url.encode()).hexdigest() + ".jpg")
+        if f.exists():
+            img = QImage(str(f))
+            if not img.isNull():
+                self.mem[url] = img
+                return img
+        self.mem[url] = None
+        self.pool.submit(self._fetch, url, f)
+        return None
+
+    def _fetch(self, url, f):
+        try:
+            data = fetch_bytes(url, 4_000_000)
+            f.write_bytes(data)
+            img = QImage()
+            if img.loadFromData(data):
+                self.mem[url] = img
+                self.ready.emit(url, img)
+        except Exception:
+            pass
+
+
+class PreviewPlayer(QObject):
+    """30-second previews from Deezer; pauses your music while one plays and picks it back up after."""
+    changed = Signal()
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win, self.player, self.url, self.key, self.resume = win, None, "", "", False
+
+    def _ensure(self):
+        if self.player is None:
+            self.player = QMediaPlayer(self)
+            self.out = QAudioOutput(self)
+            self.out.setVolume(0.8)
+            self.player.setAudioOutput(self.out)
+            self.player.mediaStatusChanged.connect(self._status)
+        return self.player
+
+    def _status(self, st):
+        if st in (QMediaPlayer.EndOfMedia, QMediaPlayer.InvalidMedia):
+            self.stop()
+
+    def playing(self, key=None):
+        return bool(self.url) and (key is None or key == self.key)
+
+    def toggle(self, url, label="", key=None):
+        key = key or url
+        if self.playing(key):
+            self.stop()
+            return
+        if not url:
+            self.win.toast("no preview for that one")
+            return
+        p = self._ensure()
+        if not self.url:
+            self.resume = self.win.player.playbackState() == QMediaPlayer.PlayingState
+            if self.resume:
+                self.win.player.pause()
+        self.url, self.key = url, key
+        p.setSource(QUrl(url))
+        p.play()
+        self.win.toast(f"previewing {label}" if label else "previewing", "stop", self.stop, 31000)
+        self.changed.emit()
+
+    def stop(self):
+        if self.player is not None:
+            self.player.stop()
+        was = bool(self.url)
+        self.url = self.key = ""
+        t = getattr(self.win, "_toast", None)
+        try:
+            if t is not None and t.action == self.stop:
+                t.hide()
+        except RuntimeError:
+            pass
+        if was and self.resume:
+            self.win.player.play()
+        self.resume = False
+        self.changed.emit()
+
+
+class RoundPic(QLabel):
+    def __init__(self, size, round_=True, color="#222222"):
+        super().__init__()
+        self.s, self.round, self.color = size, round_, QColor(color)
+        self.setFixedSize(size, size)
+        self.img = None
+
+    def set_image(self, img):
+        self.img = img
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        path = QPainterPath()
+        r = QRectF(0, 0, self.s, self.s)
+        if self.round:
+            path.addEllipse(r)
+        else:
+            path.addRoundedRect(r, 10, 10)
+        p.setClipPath(path)
+        if self.img is not None and not self.img.isNull():
+            p.drawImage(r, self.img)
+        else:
+            p.fillRect(r, self.color)
+
+
+class DiscoverPage(QWidget):
+    def __init__(self, win):
+        super().__init__(objectName="discoverpage")
+        self.win = win
+        self.engine = Discover(win)
+        self.imgs = NetImages(win)
+        self.imgs.ready.connect(self.image_ready)
+        self.preview = PreviewPlayer(win)
+        self.preview.changed.connect(self.refresh_play_buttons)
+        self.pics = {}                 # url → [RoundPic]
+        self.play_btns = []            # (button, url)
+        self.data, self.busy, self.sel = None, False, None
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll = sa
+        outer.addWidget(sa)
+        body = QWidget()
+        sa.setWidget(body)
+        v = QVBoxLayout(body)
+        v.setContentsMargins(32, 28, 28, 28)
+        v.setSpacing(10)
+        head = QHBoxLayout()
+        tv = QVBoxLayout()
+        tv.addWidget(QLabel("FOR YOU", objectName="eyebrow"))
+        tv.addWidget(QLabel("Discover", objectName="h1"))
+        head.addLayout(tv, 1)
+        self.status = QLabel(objectName="dim")
+        head.addWidget(self.status, 0, Qt.AlignBottom)
+        head.addSpacing(8)
+        self.b_refresh = win.tbtn("refresh", lambda: self.refresh(force=True), "pill")
+        head.addWidget(self.b_refresh, 0, Qt.AlignBottom)
+        v.addLayout(head)
+        note = QLabel("Based on the artists in your library and what you play most. Similar artists come from Deezer "
+                      "(only artist names are sent). Hit ▶ for a 30-second preview, ⤓ to search Soulseek for it.",
+                      objectName="time")
+        note.setWordWrap(True)
+        v.addWidget(note)
+        self.sections = {}
+        for key, title in (("seeds", "your top artists"), ("detail", ""), ("recs", "artists you might like"),
+                           ("missing", "albums you don't have yet — from artists you do"),
+                           ("rediscover", "rediscover in your library")):
+            lab = QLabel(win.L(title).upper(), objectName="eyebrow") if title else None
+            if lab:
+                lab.setContentsMargins(0, 18, 0, 4)
+                v.addWidget(lab)
+            box = QWidget()
+            if key == "detail":
+                box.setObjectName("detailbox")
+                box.setAttribute(Qt.WA_StyledBackground, True)
+                QVBoxLayout(box)
+                box.hide()
+            else:
+                FlowLayout(box, spacing=14 if key != "seeds" else 18)
+            v.addWidget(box)
+            self.sections[key] = (lab, box)
+        v.addStretch()
+
+    # ------------------------------------------------------------ data
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self.data is None:
+            self.data = self.engine.load()
+            self.render()
+        stale = not self.data or _time.time() - self.data.get("time", 0) > 3 * 86400
+        if stale and not self.busy and self.win.tracks:
+            self.refresh()
+        self.render_rediscover()
+
+    def hideEvent(self, e):
+        self.preview.stop()
+        super().hideEvent(e)
+
+    def refresh(self, force=False):
+        if self.busy:
+            return
+        if not self.win.tracks:
+            self.status.setText(self.win.L("add some music first"))
+            return
+        self.busy = True
+        self.b_refresh.setEnabled(False)
+        self.status.setText(self.win.L("finding music for you…"))
+        box = {}
+
+        def prog(text, i, n):
+            box["p"] = (text, i, n)
+
+        def tick():
+            if "p" in box:
+                self.status.setText(box.pop("p")[0])
+
+        def done(res, err):
+            self.busy = False
+            self.b_refresh.setEnabled(True)
+            if err:
+                self.status.setText(self.win.L(f"couldn't refresh: {err}")[:120])
+                return
+            self.data = res
+            self.render()
+        self.win.bg(lambda: self.engine.run(prog), done, tick)
+
+    # ------------------------------------------------------------ render helpers
+    def clear(self, key):
+        box = self.sections[key][1]
+        lay = box.layout()
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+            elif it.layout() is not None:
+                QWidget().setLayout(it.layout())
+
+    def pic(self, url, size, round_=True):
+        rp = RoundPic(size, round_, self.win.c["select"])
+        img = self.imgs.get(url)
+        if img is not None:
+            rp.set_image(img)
+        else:
+            self.pics.setdefault(url, []).append(rp)
+        return rp
+
+    def image_ready(self, url, img):
+        for rp in self.pics.pop(url, []):
+            try:
+                rp.set_image(img)
+            except RuntimeError:
+                pass
+
+    def play_btn(self, url, label, tid=None):
+        key = str(tid or url)
+        b = QPushButton("▶", objectName="chip")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip("30-second preview")
+        b.setEnabled(bool(url or tid))
+        b.clicked.connect(lambda: self.start_preview(url, label, tid, key))
+        self.play_btns.append((b, key))
+        return b
+
+    def start_preview(self, url, label, tid, key):
+        if self.preview.playing(key):
+            self.preview.stop()
+            return
+        if not tid:
+            self.preview.toggle(url, label, key)
+            return
+
+        def fresh():                                 # preview links expire, so ask for a current one
+            return (deezer_get(f"/track/{tid}") or {}).get("preview") or url
+        self.win.bg(fresh, lambda res, err: self.preview.toggle(url if err else res, label, key))
+
+    def refresh_play_buttons(self):
+        alive = []
+        for b, url in self.play_btns:
+            try:
+                b.setText("■" if self.preview.playing(url) else "▶")
+                alive.append((b, url))
+            except RuntimeError:
+                pass
+        self.play_btns = alive
+
+    def find_btn(self, query, tip="search Soulseek"):
+        b = QPushButton("⤓", objectName="chip")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip(f"{tip}: {query}")
+        b.clicked.connect(lambda: self.win.search_soulseek(query))
+        return b
+
+    def render(self):
+        d = self.data
+        for k in ("seeds", "recs", "missing"):
+            self.clear(k)
+        self.play_btns = []
+        if not d:
+            self.status.setText(self.win.L("hit refresh to get recommendations") if not self.busy else self.status.text())
+            for k in ("seeds", "recs", "missing"):
+                self.sections[k][0].hide()
+            return
+        for k in ("seeds", "recs", "missing"):
+            self.sections[k][0].show()
+        age = int((_time.time() - d.get("time", 0)) / 3600)
+        self.status.setText(self.win.L(f"updated {age} h ago" if age else "just updated"))
+        # top artists
+        for s in d.get("seeds", [])[:12]:
+            w = QWidget()
+            l = QVBoxLayout(w)
+            l.setContentsMargins(0, 0, 0, 0)
+            l.setSpacing(4)
+            l.addWidget(self.pic(s.get("picture"), 76), 0, Qt.AlignHCenter)
+            n = QLabel(s["name"])
+            n.setAlignment(Qt.AlignCenter)
+            n.setFixedWidth(96)
+            n.setText(n.fontMetrics().elidedText(s["name"], Qt.ElideRight, 94))
+            l.addWidget(n)
+            sub = QLabel((f"{s['plays']} plays" if s.get("plays") else f"{s['albums']} album" + ("s" if s["albums"] != 1 else "")),
+                         objectName="time")
+            sub.setAlignment(Qt.AlignCenter)
+            l.addWidget(sub)
+            w.setCursor(Qt.PointingHandCursor)
+            w.mousePressEvent = lambda _e, a=s["name"]: self.win.go("browse", a)
+            self.sections["seeds"][1].layout().addWidget(w)
+        # recommended artists
+        for r in d.get("recs", []):
+            card = QWidget(objectName="reccard")
+            card.setAttribute(Qt.WA_StyledBackground, True)
+            card.setFixedWidth(190)
+            l = QVBoxLayout(card)
+            l.setContentsMargins(12, 12, 12, 10)
+            l.setSpacing(4)
+            l.addWidget(self.pic(r.get("picture"), 166, round_=False))
+            nm = QLabel(objectName="npTitle")
+            nm.setText(nm.fontMetrics().elidedText(r["name"], Qt.ElideRight, 166))
+            l.addWidget(nm)
+            bc = QLabel(objectName="time")
+            bc.setText(bc.fontMetrics().elidedText("like " + ", ".join(r.get("because") or []), Qt.ElideRight, 166))
+            bc.setToolTip("because you have " + ", ".join(r.get("because") or []))
+            l.addWidget(bc)
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            top = (r.get("top") or [{}])[0]
+            row.addWidget(self.play_btn(top.get("preview", ""), f"{r['name']} — {top.get('title', '')}", top.get("tid")))
+            row.addWidget(self.find_btn(r["name"]))
+            more = QPushButton(self.win.L("songs"), objectName="chip")
+            more.setCursor(Qt.PointingHandCursor)
+            more.clicked.connect(lambda _=False, rr=r: self.show_detail(rr))
+            row.addWidget(more)
+            row.addStretch()
+            l.addLayout(row)
+            self.sections["recs"][1].layout().addWidget(card)
+        # missing albums
+        for a in d.get("missing", []):
+            card = QWidget(objectName="reccard")
+            card.setAttribute(Qt.WA_StyledBackground, True)
+            card.setFixedWidth(170)
+            l = QVBoxLayout(card)
+            l.setContentsMargins(10, 10, 10, 8)
+            l.setSpacing(3)
+            l.addWidget(self.pic(a.get("cover"), 150, round_=False))
+            t = QLabel(objectName="npTitle")
+            t.setText(t.fontMetrics().elidedText(a["title"], Qt.ElideRight, 150))
+            t.setToolTip(a["title"])
+            l.addWidget(t)
+            sub = QLabel(objectName="time")
+            sub.setText(sub.fontMetrics().elidedText(
+                " · ".join(x for x in (a["artist"], a["year"], a["type"] if a["type"] != "album" else "") if x),
+                Qt.ElideRight, 150))
+            l.addWidget(sub)
+            row = QHBoxLayout()
+            row.addWidget(self.find_btn(f"{a['artist']} {a['title']}", "find this album on Soulseek"))
+            row.addStretch()
+            l.addLayout(row)
+            self.sections["missing"][1].layout().addWidget(card)
+        if not d.get("missing"):
+            self.sections["missing"][0].hide()
+        if self.sel:
+            r = next((x for x in d.get("recs", []) if x["id"] == self.sel), None)
+            self.show_detail(r, toggle=False) if r else self.hide_detail()
+
+    def hide_detail(self):
+        self.sel = None
+        self.clear("detail")
+        self.sections["detail"][1].hide()
+
+    def show_detail(self, r, toggle=True):
+        box = self.sections["detail"][1]
+        if r is None or (toggle and self.sel == r["id"] and box.isVisible()):
+            self.hide_detail()
+            return
+        self.clear("detail")
+        lay = box.layout()
+        self.sel = r["id"]
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(6)
+        top = QHBoxLayout()
+        top.setSpacing(16)
+        top.addWidget(self.pic(r.get("picture"), 92))
+        tv = QVBoxLayout()
+        tv.addStretch()
+        nm = QLabel(r["name"], objectName="h2")
+        nm.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        tv.addWidget(nm)
+        fans = r.get("fans") or 0
+        sub = QLabel(f"{fans:,} fans on Deezer  ·  because you have {', '.join(r.get('because') or [])}",
+                     objectName="dim")
+        sub.setWordWrap(True)
+        sub.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        tv.addWidget(sub)
+        tv.addStretch()
+        top.addLayout(tv, 1)
+        top.addWidget(self.win.tbtn("search Soulseek", lambda: self.win.search_soulseek(r["name"]), "pillPrimary"),
+                      0, Qt.AlignVCenter)
+        top.addWidget(self.win.tbtn("close", self.hide_detail, "pill"), 0, Qt.AlignVCenter)
+        lay.addLayout(top)
+        for i, t in enumerate(r.get("top") or []):
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            num = QLabel(f"{i + 1:02}", objectName="nextnum")
+            num.setFixedWidth(26)
+            row.addWidget(num)
+            row.addWidget(self.pic(t.get("cover"), 36, round_=False))
+            tl = QLabel(f"{t['title']}")
+            tl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            row.addWidget(tl, 2)
+            al = QLabel(t.get("album", ""), objectName="dim")
+            al.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            row.addWidget(al, 2)
+            row.addWidget(QLabel(fmt_time(t.get("duration") or 0), objectName="time"))
+            row.addWidget(self.play_btn(t.get("preview", ""), f"{r['name']} — {t['title']}", t.get("tid")))
+            row.addWidget(self.find_btn(f"{r['name']} {t.get('album') or t['title']}"))
+            lay.addLayout(row)
+        box.show()
+        self.refresh_play_buttons()
+        QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(box, 0, 40))
+
+    def render_rediscover(self):
+        """local: albums you haven't played in a while (or ever), a different handful each visit."""
+        self.clear("rediscover")
+        stats, now = self.win.stats, _time.time()
+        cands = []
+        for a in self.win.albums.values():
+            last = max((stats.get(t["path"], {}).get("last", 0) for t in a["tracks"]), default=0)
+            plays = sum(stats.get(t["path"], {}).get("plays", 0) for t in a["tracks"])
+            if now - last > 30 * 86400:
+                cands.append((plays, a))
+        random.shuffle(cands)
+        cands.sort(key=lambda x: -min(x[0], 5))          # favourites you've drifted from first, then the rest
+        lab, box = self.sections["rediscover"]
+        lab.setVisible(bool(cands))
+        for plays, a in cands[:8]:
+            card = QWidget(objectName="reccard")
+            card.setAttribute(Qt.WA_StyledBackground, True)
+            card.setFixedWidth(150)
+            card.setCursor(Qt.PointingHandCursor)
+            l = QVBoxLayout(card)
+            l.setContentsMargins(8, 8, 8, 8)
+            l.setSpacing(3)
+            c = QLabel()
+            c.setPixmap(self.win.covers.get(a["cover"], 134))
+            l.addWidget(c)
+            t = QLabel(objectName="npTitle")
+            t.setText(t.fontMetrics().elidedText(a["album"], Qt.ElideRight, 134))
+            l.addWidget(t)
+            s = QLabel(objectName="time")
+            s.setText(s.fontMetrics().elidedText(f"{a['artist']} · " + (f"{plays} plays" if plays else "never played"),
+                                                 Qt.ElideRight, 134))
+            l.addWidget(s)
+            card.mousePressEvent = lambda e, k=a["key"], tr=a["tracks"]: (
+                self.win.play_list(tr, 0) if e.button() == Qt.LeftButton and e.position().y() < 142
+                else self.win.go("album", k))
+            card.setToolTip("click the cover to play · click the name to open")
+            box.layout().addWidget(card)
+
+
 # ------------------------------------------------------------------ settings
 class Settings(QWidget):
     def __init__(self, win):
@@ -7950,6 +8600,8 @@ QListWidget#settingsnav::item {{ padding: 9px 14px; margin: 1px 0; border-radius
 QListWidget#settingsnav::item:hover {{ color: {c['text']}; }}
 QListWidget#settingsnav::item:selected {{ background: {c['select']}; color: {c['text']}; }}
 QLabel#formlabel {{ color: {c['text']}; }}
+QWidget#reccard {{ background: {c['select']}; border-radius: {min(r, 14)}px; }}
+QWidget#detailbox {{ background: {c['select']}; border-radius: {min(r, 14)}px; }}
 QLabel#coverdrop {{ background: {c['select']}; border-radius: {min(r, 12)}px; color: {c['dim']}; }}
 QWidget#onlinebox {{ background: {c['select']}; border-radius: {min(r, 12)}px; }}
 QTableWidget#tagtable::item {{ padding: 0 8px; }}
@@ -7993,6 +8645,12 @@ class Main(QMainWindow):
         self.queue, self.unshuffled, self.qi = [], [], -1
         self.current_path, self.dur, self.errors, self.pending_pos = None, 0, 0, 0
         self.playlists = load_json(self.dir / "playlists.json", {})
+        self.stats = load_json(self.dir / "stats.json", {})          # path → {"plays", "last"}
+        self._counted = False
+        self.stats_timer = QTimer(self)
+        self.stats_timer.setSingleShot(True)
+        self.stats_timer.setInterval(5000)
+        self.stats_timer.timeout.connect(lambda: save_json(self.dir / "stats.json", self.stats))
         self.history, self.page, self.page_arg = [], None, None
         self.tbuttons, self.tables, self.scanner = [], [], None
         self.icon_buttons, self.display_family = [], ""
@@ -8179,12 +8837,14 @@ class Main(QMainWindow):
         self.inspect_page = InspectPage(self)
         self.vis_page = VisualizerPage(self)
         self.tag_page = TagEditorPage(self)
-        self.pages = {"visualizer": self.vis_page, "tags": self.tag_page, "browse": self.browser, "albums": albums_page, "artists": self.artists_page,
+        self.discover_page = DiscoverPage(self)
+        self.pages = {"visualizer": self.vis_page, "tags": self.tag_page, "discover": self.discover_page, "browse": self.browser, "albums": albums_page, "artists": self.artists_page,
                       "songs": songs_page, "queue": self.queue_page, "album": self.collection,
                       "playlist": self.collection, "lyrics": self.lyrics_page, "download": self.download_page,
                       "inspect": self.inspect_page}
         for w in (self.browser, albums_page, self.artists_page, songs_page, self.queue_page, self.collection,
-                  self.lyrics_page, self.download_page, self.inspect_page, self.vis_page, self.tag_page):
+                  self.lyrics_page, self.download_page, self.inspect_page, self.vis_page, self.tag_page,
+                  self.discover_page):
             self.stack.addWidget(w)
 
     def make_search(self):
@@ -8243,6 +8903,7 @@ class Main(QMainWindow):
         rl.setSpacing(8)
         for key, kind, tip in (("albums", "grid", "albums  (ctrl+1)"), ("browse", "columns", "browse  (ctrl+2)"),
                                ("songs", "list", "songs  (ctrl+3)"), ("queue", "queue", "queue  (ctrl+4)"),
+                               ("discover", "discover", "discover  (ctrl+5)"),
                                ("download", "download", "download  (ctrl+d)")):
             b = IconButton(self, kind, 44)
             b.rail = True
@@ -8301,7 +8962,7 @@ class Main(QMainWindow):
         self.brand = QLabel(objectName="brand")
         sl.addWidget(self.brand)
         sl.addSpacing(22)
-        for key in ("albums", "browse", "artists", "songs", "queue", "download"):
+        for key in ("albums", "browse", "artists", "songs", "queue", "discover", "download"):
             b = QPushButton(objectName="nav")
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
@@ -8508,11 +9169,11 @@ class Main(QMainWindow):
         sc("Ctrl+2", lambda: self.go("browse"))
         sc("Ctrl+3", lambda: self.go("songs"))
         sc("Ctrl+4", lambda: self.go("queue"))
+        sc("Ctrl+5", lambda: self.go("discover"))
         sc("Ctrl+E", self.open_eq)
         sc("Ctrl+L", self.toggle_lyrics)
         sc("Ctrl+D", lambda: self.go("download"))
         sc("Ctrl+I", self.inspect_current)
-        sc("Ctrl+5", lambda: self.go("download"))
         sc(Qt.Key_MediaTogglePlayPause, self.toggle_play)
         sc(Qt.Key_MediaPlay, self.toggle_play)
         sc(Qt.Key_MediaNext, self.next)
@@ -8675,6 +9336,12 @@ class Main(QMainWindow):
             self.toast(f"skin “{name}” installed")
         QTimer.singleShot(0, done)
 
+    def search_soulseek(self, query):
+        self.go("download")
+        dp = self.download_page
+        dp.q.setText(query)
+        dp.search()
+
     def save_library(self):
         try:
             save_json(self.dir / "library.json",
@@ -8749,6 +9416,10 @@ class Main(QMainWindow):
                     pass
         for name, lst in self.playlists.items():
             self.playlists[name] = [moved.get(p, p) for p in lst]
+        for a, b in moved.items():
+            if a in self.stats:
+                self.stats[b] = self.stats.pop(a)
+        self.stats_timer.start()
         if self.current_path in moved:
             self.current_path = moved[self.current_path]
         self.__dict__.pop("_lyrics_cache", None)
@@ -9019,6 +9690,7 @@ class Main(QMainWindow):
             return
         t = self.queue[self.qi]
         self.current_path = t["path"]
+        self._counted = False
         self.player.setSource(QUrl.fromLocalFile(t["path"]))
         if autoplay:
             self.player.play()
@@ -9249,6 +9921,12 @@ class Main(QMainWindow):
     def on_position(self, ms):
         if ms > 0:
             self.errors = 0
+        if not self._counted and self.dur and self.current_path and ms >= min(30000, self.dur * 0.5):
+            self._counted = True                       # counts as a play: 30 s in, or half of a short song
+            e = self.stats.setdefault(self.current_path, {"plays": 0, "last": 0})
+            e["plays"] = int(e.get("plays", 0)) + 1
+            e["last"] = int(_time.time())
+            self.stats_timer.start()
         last_ms, last_t = self._pres_pos
         now = _time.monotonic()
         if abs(ms - (last_ms + (now - last_t) * 1000)) > 2500 and self.player.playbackState() == QMediaPlayer.PlayingState:
@@ -9460,6 +10138,7 @@ class Main(QMainWindow):
         if 0 <= self.qi < len(self.queue):
             t = self.queue[self.qi]
             self.current_path = t["path"]
+            self._counted = False
             self.update_now_playing(t)
             self.write_now_playing(t)
         self.refresh_playing()
@@ -9570,6 +10249,10 @@ class Main(QMainWindow):
             self.cfg["session"] = {"queue": [t["path"] for t in self.queue[:5000]],
                                    "qi": self.qi, "pos": self.player.position()}
         self.cfg.save()
+        try:
+            save_json(self.dir / "stats.json", self.stats)
+        except OSError:
+            pass
         if isinstance(self.player, NexusEngine):
             self.player.shutdown()
         self.soulseek.stop(wait=8)
