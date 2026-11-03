@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.12.2"
+VERSION = "1.12.3"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -1830,7 +1830,7 @@ class _Decoder(threading.Thread):
             s = c.streams.audio[0]
             file_rate = s.rate or s.codec_context.sample_rate or 44100
             rate = eng._choose_rate(file_rate)
-            eng._ensure_stream(rate)
+            rate = eng._ensure_stream(rate)
             if st["rate"] is not None and st["rate"] != rate and st["fir"] is not None:
                 st["fir"] = None
                 st["fir_ver"] = -1
@@ -2125,30 +2125,65 @@ class NexusEngine(QObject):
         return dflt if dflt is not None and dflt >= 0 else None
 
     def _ensure_stream(self, rate):
-        if self.stream is not None and self.stream_rate == rate:
-            return
+        """opens the output; returns the sample rate actually used. tries a few ways, because some devices
+        (virtual 7.1 headsets, odd drivers, busy devices) refuse the first choice."""
+        rmap = self.__dict__.setdefault("_rate_map", {})       # rates this device refused → what it took instead
+        if self.stream is not None and self.stream_rate in (rate, rmap.get(rate)):
+            return self.stream_rate
         self._close_stream()
         if sd is None:
             self.stream = _NullStream(samplerate=rate, callback=self._callback)
             self.out_info = f"null output · {rate / 1000:g} kHz"
-        else:
-            idx = self._device_index()
-            excl = sys.platform.startswith("win") and self.win.cfg.get("exclusive_mode", False)
-            extra = sd.WasapiSettings(exclusive=True) if excl else None
+            self.stream_rate = rate
+            self.stream.start()
+            return rate
+        win = sys.platform.startswith("win")
+        idx = self._device_index()
+        excl = win and self.win.cfg.get("exclusive_mode", False)
+
+        def wasapi(**kw):
             try:
-                self.stream = sd.OutputStream(device=idx, samplerate=rate, channels=2, dtype="float32",
-                                              callback=self._callback, latency="high", extra_settings=extra)
-                mode = "exclusive" if excl else "shared"
+                return sd.WasapiSettings(**kw)
             except Exception:
-                if not excl:
-                    raise
-                self.stream = sd.OutputStream(device=idx, samplerate=rate, channels=2, dtype="float32",
-                                              callback=self._callback, latency="high")
-                mode = "shared (exclusive refused)"
-            name = sd.query_devices(idx)["name"] if idx is not None else "default"
-            self.out_info = f"{name} · {mode} · {rate / 1000:g} kHz"
-        self.stream_rate = rate
-        self.stream.start()
+                return None
+
+        def dev_rate(i):
+            try:
+                return int(sd.query_devices(i if i is not None else sd.default.device[1])["default_samplerate"])
+            except Exception:
+                return rate
+        tries = []
+        if excl:
+            tries.append((idx, rate, wasapi(exclusive=True), "exclusive"))
+        if win:
+            tries.append((idx, rate, wasapi(auto_convert=True), "shared"))
+        tries += [(idx, rate, None, "shared" if win else ""), (None, rate, None, "default device")]
+        for i in dict.fromkeys((idx, None)):
+            r = dev_rate(i)
+            if r != rate:
+                tries += [(i, r, wasapi(auto_convert=True) if win and i == idx else None, "converted")]
+        errors = []
+        for dev, r, extra, mode in tries:
+            try:
+                st = sd.OutputStream(device=dev, samplerate=r, channels=2, dtype="float32",
+                                     callback=self._callback, latency="high", extra_settings=extra)
+                st.start()
+            except Exception as e:
+                errors.append(f"{mode or 'output'}: {e}")
+                continue
+            self.stream, self.stream_rate = st, r
+            if r != rate:
+                rmap[rate] = r
+            try:
+                name = sd.query_devices(dev)["name"] if dev is not None else "default output"
+            except Exception:
+                name = "output"
+            if excl and mode != "exclusive":
+                mode += " (exclusive refused)"
+            self.out_info = " · ".join(x for x in (name, mode, f"{r / 1000:g} kHz") if x)
+            return r
+        log_problem("couldn't open any audio output:\n" + "\n".join(errors))
+        raise RuntimeError(f"no audio output would open ({errors[0] if errors else 'unknown'})")
 
     def _close_stream(self):
         s, self.stream = self.stream, None
@@ -10237,8 +10272,21 @@ class Main(QMainWindow):
     def on_error(self, _err, msg=""):
         self.scan_label.setText(self.L(f"can't play: {msg}"[:120]))
         self.errors += 1
-        if self.errors < 5:
+        cur = self.queue[self.qi]["path"] if 0 <= self.qi < len(self.queue) else ""
+        log_problem(f"can't play {cur}: {msg}  [engine: {type(self.player).__name__}, "
+                    f"output: {getattr(self.player, 'out_info', '')}]")
+        if isinstance(self.player, NexusEngine) and ("audio output" in msg or self.errors >= 2):
+            self.toast(f"can't play: {msg}"[:140], "use basic player", self.use_basic_player, 20000)
+        else:
+            self.toast(f"can't play: {msg}"[:140])
+        if self.errors < 5 and "audio output" not in msg:
             QTimer.singleShot(400, lambda: self.next(auto=True))
+
+    def use_basic_player(self):
+        """fallback when the nexus engine can't drive this pc's audio: Qt's player (no EQ / boost / exclusive)."""
+        self.cfg["audio_engine"] = "qt"
+        self.cfg.save()
+        self.restart_app()
 
     # ---------------------------------------------------------- session
     def restore_session(self):
@@ -10537,6 +10585,16 @@ class Main(QMainWindow):
             self.discord.clear()
         self.discord.shutdown()
         super().closeEvent(e)
+
+
+def log_problem(text):
+    """appends to crash.log in the config folder (pythonw has no console to print to)."""
+    try:
+        with open(app_dir() / "crash.log", "a", encoding="utf-8") as f:
+            f.write(f"\n==== {_time.strftime('%Y-%m-%d %H:%M:%S')}  nexus {VERSION}  python {sys.version.split()[0]}\n"
+                    f"{text}\n")
+    except Exception:
+        pass
 
 
 def _log_uncaught(kind, value, tb):
