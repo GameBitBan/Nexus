@@ -58,11 +58,56 @@ def wanted():
     return out
 
 
+def pip_install(pkgs):
+    """run pip; if Qt is already there, show a small "installing…" window meanwhile so a first start after
+    an update doesn't look like Nexus silently refusing to open."""
+    py = os.path.join(os.path.dirname(sys.executable), "python.exe")
+    if not os.path.exists(py):
+        py = sys.executable
+    cmd = [py, "-m", "pip", "install", "--user", *pkgs]
+    flags = 0x08000000 if os.name == "nt" else 0
+    if CHECK or importlib.util.find_spec("PySide6") is None:
+        return subprocess.run(cmd, capture_output=True, text=True, creationflags=flags)
+    import threading
+    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtWidgets import QApplication, QLabel
+    from PySide6.QtGui import QGuiApplication
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    app = QApplication.instance() or QApplication(sys.argv)
+    box = QLabel(f"Nexus\n\ninstalling {', '.join(pkgs)}\n(one time after an update, about a minute)\n\n")
+    box.setAlignment(Qt.AlignCenter)
+    box.setWindowTitle("Nexus")
+    box.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+    box.setStyleSheet("QLabel{background:#101012;color:#e8e8e8;font:13px 'Consolas','monospace';"
+                      "border:1px solid #333;padding:28px;}")
+    box.resize(460, 190)
+    box.show()
+    out = {}
+    t = threading.Thread(target=lambda: out.setdefault("r", subprocess.run(
+        cmd, capture_output=True, text=True, creationflags=flags)), daemon=True)
+    t.start()
+    dots = [0]
+
+    def tick():
+        if not t.is_alive():
+            box.close()
+            app.quit()
+            return
+        dots[0] = (dots[0] + 1) % 4
+        box.setText(f"Nexus\n\ninstalling {', '.join(pkgs)}\n(one time after an update, about a minute)\n\n"
+                    + "·" * dots[0])
+    timer = QTimer()
+    timer.timeout.connect(tick)
+    timer.start(400)
+    app.exec()
+    timer.stop()
+    t.join()
+    return out["r"]
+
+
 missing = [(pkg, mod) for pkg, mod in wanted() if importlib.util.find_spec(mod) is None]
 if missing:
-    py = os.path.join(os.path.dirname(sys.executable), "python.exe")
-    r = subprocess.run([py, "-m", "pip", "install", "--user", *[p for p, _ in missing]],
-                       capture_output=True, text=True, creationflags=0x08000000 if os.name == "nt" else 0)
+    r = pip_install([p for p, _ in missing])
     importlib.invalidate_caches()
     if r.returncode != 0:
         log("pip install failed:\n" + (r.stdout or "")[-4000:] + (r.stderr or "")[-4000:])

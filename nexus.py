@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.14.0"
+VERSION = "1.14.1"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -5826,6 +5826,30 @@ class NowPanel(QWidget):
         self.dial.update()
         self.refresh_next()
 
+    def set_remote(self, st):
+        """showing the host's song while listening along in a jam."""
+        w, width = self.win, self.width() - 44
+        self.meta.setText("  ·  ".join(b for b in ("JAM · " + str(getattr(w.jam, "host_name", "") or "host").upper(),
+                                                   st.get("fmt", "")) if b))
+        title = st.get("title") or w.L("nothing playing")
+        self.title.setText(self.title.fontMetrics().elidedText(title, Qt.ElideRight, width))
+        self.title.setToolTip(title)
+        sub = " — ".join(x for x in (st.get("artist"), st.get("album")) if x)
+        self.artist.setText(self.artist.fontMetrics().elidedText(sub, Qt.ElideRight, width))
+        self.dial.key = st.get("cover_key", "")
+        self.dial.update()
+        q = st.get("queue") or []
+        self.next_label.setVisible(bool(q))
+        for i, r in enumerate(self.rows):
+            if i < len(q):
+                r.qidx = -1
+                r.num.setText(f"{i + 1:02}")
+                r.title.setText(r.title.fontMetrics().elidedText(str(q[i][0]), Qt.ElideRight, max(60, width - 96)))
+                r.time.setText("")
+                r.show()
+            else:
+                r.hide()
+
     def set_pos(self, ms, dur):
         self.time.setText(fmt_time(ms / 1000))
         self.total.setText("/ " + fmt_time(dur / 1000) if dur else "")
@@ -8623,6 +8647,7 @@ class JamOutput:
         self.buf = PCMBuffer()
         self.volume, self.started, self.stream = volume, False, None
         self.level = 0.0
+        self.paused = self.muted = False      # just for this listener — the host keeps playing
 
     def push(self, x):
         self.buf.push(x)
@@ -8636,8 +8661,12 @@ class JamOutput:
             self.stream.start()
 
     def _cb(self, outdata, frames, _t, _s):
-        data = self.buf.pull(frames)
+        data = self.buf.pull(frames)          # keep draining while paused, so un-pausing is live again
         n = len(data)
+        if self.paused or self.muted:
+            outdata[:] = 0
+            self.level = 0.0
+            return
         if n:
             y = data * np.float32(self.volume)
             np.clip(y, -1, 1, out=y)
@@ -8864,7 +8893,7 @@ class JamService(QObject):
         self.role, self.code = "guest", code
         self.crypto = JamCrypto(code)
         self.stop_ev = threading.Event()
-        self.output = JamOutput(float(self.win.cfg.get("jam_volume", 0.9)))
+        self.output = JamOutput(self.win.jam_gain())
         self.state.emit("joining", code)
         self._go(self._guest_main)
 
@@ -8946,7 +8975,6 @@ class JamService(QObject):
                 self.output.push(x)
 
     def set_volume(self, v):
-        self.win.cfg["jam_volume"] = v
         if self.output is not None:
             self.output.volume = v
 
@@ -9102,19 +9130,30 @@ class JamPage(QWidget):
         self.g_bar = TextBar(key="progress_style")
         self.g_bar.setFixedWidth(220)
         self.g_bar.restyle(win.cfg, win.c)
+        self.g_bar.setToolTip("only the host can seek")
         col.addWidget(self.g_bar)
+        self.g_time = QLabel("0:00 / 0:00", objectName="time")
+        col.addWidget(self.g_time)
+        self.np_state = {}
+        self.perm_skip = False
         vr = QHBoxLayout()
         vr.addWidget(QLabel(win.L("volume"), objectName="time"))
         self.g_vol = TextBar(wheel=True, key="volume_style")
         self.g_vol.setFixedWidth(140)
         self.g_vol.restyle(win.cfg, win.c)
-        self.g_vol.set_value(float(win.cfg.get("jam_volume", 0.9)))
-        self.g_vol.changed.connect(lambda f: (self.jam.set_volume(f), self.g_vol.set_value(f)))
+        self.g_vol.set_value(min(1.0, float(win.cfg.get("volume", 0.8))))
+        self.g_vol.changed.connect(lambda f: win.set_volume(f))
         vr.addWidget(self.g_vol)
         vr.addStretch()
         col.addLayout(vr)
-        self.b_skip = win.tbtn("skip", lambda: self.jam.send({"t": "skip"}), "pill")
-        col.addWidget(self.b_skip, 0, Qt.AlignLeft)
+        brow = QHBoxLayout()
+        self.b_gpause = win.tbtn("pause for me", win.jam_toggle_pause, "pill")
+        self.b_gpause.setToolTip("pause just for you — the others keep listening (space)")
+        brow.addWidget(self.b_gpause)
+        self.b_skip = win.tbtn("skip", win.next, "pill")
+        brow.addWidget(self.b_skip)
+        brow.addStretch()
+        col.addLayout(brow)
         col.addStretch()
         gl.addLayout(col)
         mid = QVBoxLayout()
@@ -9138,6 +9177,9 @@ class JamPage(QWidget):
         self.np_timer = QTimer(self)
         self.np_timer.setInterval(5000)
         self.np_timer.timeout.connect(self.broadcast_np)
+        self.guest_timer = QTimer(self)
+        self.guest_timer.setInterval(250)
+        self.guest_timer.timeout.connect(self.jam_tick)
         self.on_state(self.jam.role if self.jam.role != "host" else "hosting", self.jam.code)
 
     def _toggle(self, key):
@@ -9233,11 +9275,11 @@ class JamPage(QWidget):
         if t:
             d.update(title=t["title"], artist=t["artist"], album=t["album"], fmt=quality(t))
             if with_cover:
-                pm = w.covers.get(t["cover"], 220)
+                pm = w.covers.get(t["cover"], 300)
                 ba = QByteArray()
                 buf = QBuffer(ba)
                 buf.open(QIODevice.WriteOnly)
-                pm.toImage().scaled(220, 220, Qt.KeepAspectRatio, Qt.SmoothTransformation).save(buf, "JPG", 80)
+                pm.toImage().scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation).save(buf, "JPG", 80)
                 d["cover"] = _b64.b64encode(bytes(ba)).decode()
         d["queue"] = [[x["title"], x["artist"]] for x in w.queue[w.qi + 1: w.qi + 9]] if t else []
         return d
@@ -9270,6 +9312,7 @@ class JamPage(QWidget):
             self.status.setText(r(f"connecting to {detail}…"))
         elif st == "guest":
             self.stack.setCurrentIndex(2)
+            self.guest_timer.start()
             self.g_from.setText(r(f"LISTENING WITH {detail}").upper())
             self.status.setText(r("connected — music starts in a moment"))
             self.jam.send({"t": "hello", "name": self.jam.name()})
@@ -9281,7 +9324,28 @@ class JamPage(QWidget):
             self.stack.setCurrentIndex(0)
             self.np_timer.stop()
             self.status.setText(r(detail or "listen together with a friend — one of you hosts, the other joins"))
+        if st not in ("guest", "joining") and self.guest_timer.isActive():
+            self.guest_timer.stop()
+            self.np_state = {}
+            self.perm_skip = False
+            self.win.jam_guest_ended()
+        self.win.update_controls()
         self.win.update_jam_badge()
+
+    def jam_pos(self):
+        st = self.np_state
+        if not st:
+            return 0, 0
+        pos = st["pos"] + ((_time.monotonic() - st["at"]) * 1000 if st["playing"] else 0)
+        return (min(pos, st["dur"]) if st["dur"] else pos), st["dur"]
+
+    def jam_tick(self):
+        if self.jam.role != "guest":
+            return
+        pos, dur = self.jam_pos()
+        self.g_bar.set_value(pos / dur if dur else 0)
+        self.g_time.setText(f"{fmt_time(pos / 1000)} / {fmt_time(dur / 1000)}")
+        self.win.jam_show_pos(pos, dur)
 
     def refresh_people(self):
         self.people_list.clear()
@@ -9334,7 +9398,16 @@ class JamPage(QWidget):
                 img.loadFromData(_b64.b64decode(d["cover"]))
                 self.g_cover.setPixmap(QPixmap.fromImage(img).scaled(220, 220, Qt.KeepAspectRatio,
                                                                      Qt.SmoothTransformation))
-            self.g_bar.set_value(d["pos"] / d["dur"] if d.get("dur") else 0)
+            new_song = d.get("title") != self.np_state.get("title") or d.get("artist") != self.np_state.get("artist")
+            cover_key = w.jam_save_cover(d["cover"]) if d.get("cover") else \
+                (self.np_state.get("cover_key", "") if not new_song else "")
+            self.np_state = {"title": d.get("title") or "", "artist": d.get("artist") or "",
+                             "album": d.get("album") or "", "fmt": d.get("fmt") or "", "cover_key": cover_key,
+                             "pos": int(d.get("pos") or 0), "dur": int(d.get("dur") or 0),
+                             "playing": bool(d.get("playing")), "at": _time.monotonic(),
+                             "queue": d.get("queue", [])}
+            w.jam_show_np(self.np_state)
+            self.jam_tick()
             self.g_queue.clear()
             for title, artist in d.get("queue", []):
                 self.g_queue.addItem(f"{title}  —  {artist}")
@@ -9345,6 +9418,8 @@ class JamPage(QWidget):
             for wdg in (self.add_lab, self.g_search, self.g_lib):
                 wdg.setVisible(bool(d.get("add")))
             self.b_skip.setVisible(bool(d.get("skip")))
+            self.perm_skip = bool(d.get("skip"))
+            w.update_controls()
         elif t == "chat":
             self.chat_line(d.get("from_name", "?"), d.get("text", ""))
         elif t == "kicked":
@@ -10648,7 +10723,7 @@ class Main(QMainWindow):
         self.seek = TextBar(key="progress_style")
         self.seek.setMaximumWidth(620)
         self.seek.changed.connect(lambda v: self.t_pos.setText(fmt_time(v * self.dur / 1000)))
-        self.seek.released.connect(lambda v: self.player.setPosition(int(v * self.dur)))
+        self.seek.released.connect(self.seek_released)
         self.t_dur = ClickLabel("0:00", objectName="time")
         self.t_dur.setMinimumWidth(40)
         self.t_dur.setCursor(Qt.PointingHandCursor)
@@ -11339,7 +11414,97 @@ class Main(QMainWindow):
         if 0 <= self.qi < len(self.queue):
             self.go("artists", self.queue[self.qi]["albumartist"])
 
+    # ---- listening along in someone else's jam: the bottom bar follows the host's song,
+    # play/pause pauses just for you, volume is yours, skip asks the host (if they allow it)
+    def jam_guest(self):
+        return getattr(self, "jam", None) is not None and self.jam.role == "guest"
+
+    def jam_gain(self):
+        v = float(self.cfg.get("volume", 0.8))
+        return min(2.0, v * v if v <= 1 else v)
+
+    def jam_toggle_pause(self):
+        out = self.jam.output if self.jam_guest() else None
+        if out is None:
+            return
+        out.paused = not out.paused
+        self.toast("paused just for you — the jam keeps going" if out.paused else "back in the jam", ms=2200)
+        self.update_controls()
+
+    def jam_save_cover(self, b64):
+        import hashlib
+        try:
+            data = _b64.b64decode(b64)
+        except Exception:
+            return ""
+        key = "jam-" + hashlib.sha1(data).hexdigest()[:14]
+        p = self.dir / "covers" / f"{key}.jpg"
+        if not p.exists():
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(data)
+            except OSError:
+                return ""
+        return key
+
+    def jam_show_np(self, st):
+        if not hasattr(self, "np_title"):
+            return
+        title = st["title"] or self.L("nothing playing")
+        sub = " — ".join(x for x in (st["artist"], st["album"]) if x)
+        self.np_cover.setPixmap(self.covers.get(st["cover_key"], 56))
+        self.np_title.setText(self.np_title.fontMetrics().elidedText(title, Qt.ElideRight, 250))
+        self.np_title.setToolTip(title)
+        self.np_artist.setText(self.np_artist.fontMetrics().elidedText(sub, Qt.ElideRight, 250))
+        self.np_artist.setToolTip(sub)
+        self.np_quality.setText(st["fmt"])
+        self.np_quality.setVisible(bool(st["fmt"]) and not self.cfg.get("now_panel", True))
+        self.now_panel.set_remote(st)
+        self.root.set_cover(st["cover_key"])
+        host = (getattr(self.jam, "host_name", "") or "host")
+        self.setWindowTitle(f"{title} — {st['artist']}  ·  jam with {host}" if st["title"] else APP_NAME)
+        self.update_controls()
+
+    def jam_show_pos(self, ms, dur):
+        if not hasattr(self, "seek"):
+            return
+        self.seek.set_value(ms / dur if dur else 0)
+        if not self.seek.dragging:
+            self.t_pos.setText(fmt_time(ms / 1000))
+        self.t_dur.setText("-" + fmt_time((dur - ms) / 1000) if self.cfg["show_remaining"] else fmt_time(dur / 1000))
+        self.now_panel.set_pos(ms, dur)
+
+    def jam_guest_ended(self):
+        """back to your own player."""
+        for f in (self.dir / "covers").glob("jam-*.jpg"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        self.covers.clear()
+        if 0 <= self.qi < len(self.queue):
+            self.update_now_playing(self.queue[self.qi])
+        elif hasattr(self, "np_title"):
+            self.np_cover.setPixmap(self.covers.get("", 56))
+            self.np_title.setText("")
+            self.np_artist.setText("")
+            self.np_quality.hide()
+            self.now_panel.set_track(None)
+            self.root.set_cover("")
+            self.setWindowTitle(APP_NAME)
+        self.on_position(self.player.position())
+
+    def seek_released(self, v):
+        if self.jam_guest():
+            self.toast(f"only {(getattr(self.jam, 'host_name', '') or 'the host')} can skip around in the song", ms=2500)
+            self.jam_page.jam_tick()
+            return
+        self.player.setPosition(int(v * self.dur))
+
     def toggle_play(self):
+        if self.jam_guest():
+            self.jam_toggle_pause()
+            return
         st = self.player.playbackState()
         if st == QMediaPlayer.PlayingState:
             self.player.pause()
@@ -11352,6 +11517,14 @@ class Main(QMainWindow):
             self.play_list(self.songs_table.visible_tracks() or self.tracks, 0)
 
     def next(self, auto=False):
+        if self.jam_guest() and not auto:
+            host = (getattr(self.jam, "host_name", "") or "the host")
+            if self.jam_page.perm_skip:
+                self.jam.send({"t": "skip"})
+                self.toast(f"asked {host} to skip", ms=2000)
+            else:
+                self.toast(f"only {host} can skip — they can let listeners skip on their jam page", ms=3500)
+            return
         if not self.queue:
             return
         if auto and self.cfg["repeat"] == "one":
@@ -11371,6 +11544,9 @@ class Main(QMainWindow):
         self.play_current()
 
     def prev(self):
+        if self.jam_guest():
+            self.toast(f"only {(getattr(self.jam, 'host_name', '') or 'the host')} can go back", ms=2500)
+            return
         if not self.queue:
             return
         if self.player.position() > 3000 or self.qi <= 0:
@@ -11460,6 +11636,10 @@ class Main(QMainWindow):
         self.cfg["volume"] = v
         gain = v * v if v <= 1 else v          # perceptual up to 100%, then straight boost
         self.audio.setVolume(gain if isinstance(self.player, NexusEngine) else min(1.0, gain))
+        if self.jam_guest():
+            self.jam.set_volume(min(2.0, gain))
+        if hasattr(self, "jam_page") and hasattr(self.jam_page, "g_vol"):
+            self.jam_page.g_vol.set_value(min(1.0, v))
         self.vol.set_value(v / vmax)
         pct = f"{int(round(v * 100))}%"
         self.vol.setToolTip(pct + ("  (boost)" if v > 1 else ""))
@@ -11470,7 +11650,18 @@ class Main(QMainWindow):
     def update_controls(self):
         if not hasattr(self, "b_play"):
             return
-        playing = self.player.playbackState() == QMediaPlayer.PlayingState
+        guest = self.jam_guest() and hasattr(self, "jam_page")
+        if guest:
+            out = self.jam.output
+            playing = out is not None and not out.paused and bool(self.jam_page.np_state.get("playing", True))
+            self.jam_page.b_gpause.setText(self.L("resume" if out is not None and out.paused else "pause for me"))
+            self.b_next.setToolTip("ask the host to skip" if self.jam_page.perm_skip else "only the host can skip")
+        else:
+            playing = self.player.playbackState() == QMediaPlayer.PlayingState
+            self.b_next.setToolTip("next")
+        for b in (self.b_shuffle, self.b_repeat):
+            b.setEnabled(not guest)
+        self.b_play.setToolTip("pause just for you (the jam keeps going)  (space)" if guest else "play / pause  (space)")
         self.b_play.set_kind("pause" if playing else "play")
         self.b_repeat.set_kind("repeat_one" if self.cfg["repeat"] == "one" else "repeat")
         self.b_shuffle.active = bool(self.cfg["shuffle"])
@@ -11498,6 +11689,8 @@ class Main(QMainWindow):
 
     def toggle_mute(self):
         self.audio.setMuted(not self.audio.isMuted())
+        if self.jam_guest() and self.jam.output is not None:
+            self.jam.output.muted = self.audio.isMuted()
         self.update_controls()
 
     def on_position(self, ms):
@@ -11515,6 +11708,8 @@ class Main(QMainWindow):
         now = _time.monotonic()
         if abs(ms - (last_ms + (now - last_t) * 1000)) > 2500 and self.player.playbackState() == QMediaPlayer.PlayingState:
             self.push_presence()               # seek → move discord's progress bar
+            if getattr(self, "jam", None) is not None and self.jam.role == "host" and hasattr(self, "jam_page"):
+                self.jam_page.broadcast_np(False)
         self._pres_pos = (ms, now)
         if self.dur:
             self.seek.set_value(ms / self.dur)
@@ -11632,8 +11827,9 @@ class Main(QMainWindow):
         dest = resource_dir()
         launcher = dest / "Nexus.pyw" if sys.platform.startswith("win") and (dest / "Nexus.pyw").exists() \
             else dest / "nexus.py"
+        release_instance()
         self.close()
-        QProcess.startDetached(sys.executable, [str(launcher)], str(dest))
+        QProcess.startDetached(sys.executable, [str(launcher), "--restarted"], str(dest))
         QApplication.instance().quit()
 
     def update_repo(self):
@@ -11838,6 +12034,7 @@ class Main(QMainWindow):
             self.download_page.status.setText(" · ".join(list(self.importer.log)[:3]))
 
     def closeEvent(self, e):
+        release_instance()
         if self.scanner and self.scanner.isRunning():
             self.scanner.requestInterruption()
             self.scanner.wait(3000)
@@ -11885,29 +12082,72 @@ def _log_uncaught(kind, value, tb):
     sys.__excepthook__(kind, value, tb) if sys.stderr else None
 
 
-def single_instance(app):
-    """a second Nexus would sign in to Soulseek with the same name and kick the first one off (and both
-    would fight over the audio device): if one is already running, bring it to the front instead."""
-    from PySide6.QtNetwork import QLocalServer, QLocalSocket
+_INSTANCE = {"server": None, "name": ""}
+
+
+def _instance_name():
     import getpass
-    name = f"nexus-{getpass.getuser()}"
+    return f"nexus-{getpass.getuser()}"
+
+
+def _ping_running(name, wait_reply_ms=1500):
+    """is a *responsive* Nexus already running? it must answer, so a copy that's busy shutting down
+    (or stuck) doesn't count."""
+    from PySide6.QtNetwork import QLocalSocket
     sock = QLocalSocket()
     sock.connectToServer(name)
-    if sock.waitForConnected(400):
-        sock.write(b"show")
-        sock.waitForBytesWritten(400)
-        sock.disconnectFromServer()
+    if not sock.waitForConnected(400):
+        return False
+    sock.write(b"show\n")
+    sock.waitForBytesWritten(400)
+    got, t0 = b"", _time.monotonic()
+    while b"ok" not in got and _time.monotonic() - t0 < wait_reply_ms / 1000:
+        if not sock.bytesAvailable():                # the reply can land during waitForBytesWritten already
+            sock.waitForReadyRead(100)
+        got += bytes(sock.readAll())
+        if sock.state() == QLocalSocket.UnconnectedState and not sock.bytesAvailable():
+            break
+    ok = b"ok" in got
+    sock.abort()
+    return ok
+
+
+def single_instance(app, restarted=False):
+    """a second Nexus would sign in to Soulseek with the same name and kick the first one off (and both
+    would fight over the audio device): if one is already running, bring it to the front instead.
+    after an update-restart, wait for the old copy to finish closing instead of deferring to it."""
+    from PySide6.QtNetwork import QLocalServer
+    name = _instance_name()
+    if restarted:
+        t0 = _time.monotonic()
+        while _ping_running(name, 600) and _time.monotonic() - t0 < 20:
+            _time.sleep(0.3)
+    elif _ping_running(name):
         return None
-    QLocalServer.removeServer(name)                  # stale socket from a crash
+    QLocalServer.removeServer(name)                  # stale socket from a crash / a copy that's closing
     server = QLocalServer(app)
-    server.listen(name)
+    if not server.listen(name):
+        return False
+    _INSTANCE["server"], _INSTANCE["name"] = server, name
     return server
+
+
+def release_instance():
+    """stop answering "are you running?" (called as soon as we start closing)."""
+    srv = _INSTANCE.get("server")
+    if srv is not None:
+        try:
+            srv.close()
+        except RuntimeError:
+            pass
+        _INSTANCE["server"] = None
 
 
 def main():
     sys.excepthook = _log_uncaught
-    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app = QApplication(sys.argv)
+    if QApplication.instance() is None:
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    app = QApplication.instance() or QApplication(sys.argv)
     if sys.platform.startswith("win") and not (resource_dir() / "no_aumid").exists():
         try:  # own taskbar identity + icon instead of python's (matches the installer's shortcut)
             import ctypes
@@ -11925,7 +12165,7 @@ def main():
     server = None
     if not os.environ.get("NEXUS_MULTI"):
         try:
-            server = single_instance(app)
+            server = single_instance(app, restarted="--restarted" in sys.argv)
         except Exception:
             server = False
         if server is None:
@@ -11938,6 +12178,8 @@ def main():
         c = server.nextPendingConnection()
         if c is not None:
             c.readAll()
+            c.write(b"ok\n")
+            c.flush()
         if w.isMinimized():
             w.showNormal()
         w.show()
@@ -11945,7 +12187,12 @@ def main():
         w.activateWindow()
     if server:
         server.newConnection.connect(raise_window)
-    sys.exit(app.exec())
+    code = app.exec()
+    release_instance()
+    # background workers (a big share scan, a slow download of a cover…) mustn't keep a closed Nexus alive
+    # in the background: give them a moment, then go.
+    threading.Timer(4.0, lambda: os._exit(code)).start()
+    sys.exit(code)
 
 
 if __name__ == "__main__":
