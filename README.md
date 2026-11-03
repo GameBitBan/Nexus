@@ -163,20 +163,21 @@ Switch in settings → look → layout. Record size, spin speed, and spin on/off
 
 ## skins
 
-Settings → **skins** (or the *change skin* button in Look). A skin changes the whole look: colours, fonts, corner radius, layout, buttons, progress-bar style, glyphs, visualizer, the glow, a **background image** and its own **stylesheet** (Qt CSS, the Spicetify-style bit).
+Settings → **skins** (or the *change skin* button in Look). A skin changes the whole look: colours, fonts, corner radius, layout, buttons, progress-bar style, glyphs, visualizer, the glow, a **background image or video** and its own **stylesheet** (Qt CSS, the Spicetify-style bit).
 
-- **use one**: click its card. Nexus comes with *Vapor*, *Glass*, *Paper* and *Amber CRT* plus the built-in looks.
+- **use one**: click its card. Nexus comes with *Aurora* and *Lava* (animated video backgrounds), *Midnight Gold*, *Forest*, *Sakura*, *Vapor*, *Glass*, *Paper*, *Crimson*, *Amber CRT* and *Green Screen*, plus the built-in looks.
+- **video backgrounds**: Look → **background image / video** takes any image or video (`.mp4`, `.webm`, `.mov`, `.mkv`) and puts it behind everything, over whatever skin you're on. Videos play silently on a loop and pause while Nexus is minimised. *Background opacity* and *blur* apply to both. Saving a skin takes your background with it (video included, up to ~145 MB), so you can share animated skins.
 - **install one**: drop a `.nexusskin` file on the Nexus window, or *import skin file*.
 - **make one**: set things up in Look the way you like, then in Skins give it a name, optionally pick a background image and write some CSS (*preview stylesheet* tries it live), and hit **save as skin**. **save + export file** also writes a `.nexusskin` you can send to people. Every skin card has *export* and *delete* (with undo).
 
-Skins carry no code: only look settings, a stylesheet, images and fonts, so they're safe to share. Anything else in a skin file is dropped on import.
+Skins carry no code: only look settings, a stylesheet, images, videos and fonts, so they're safe to share. Anything else in a skin file is dropped on import.
 
 ### skin file format
 A `.nexusskin` is a zip:
 ```
 skin.json        name, author, description, colors, settings, background
 style.qss        optional Qt stylesheet
-assets/          images (background, anything the stylesheet uses)
+assets/          images or a video (background.mp4 + poster.jpg for the gallery card), anything the stylesheet uses
 fonts/           .ttf / .otf, loaded while the skin is active
 ```
 ```json

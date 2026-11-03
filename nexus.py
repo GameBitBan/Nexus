@@ -68,13 +68,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.15.1"
+VERSION = "1.16.0"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 DISCORD_APP_ID = "1566983013445931018"  # Nexus's own discord app: lets anyone show what they're playing without making one
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
              ".dsf", ".opus", ".ogg", ".oga", ".mp3", ".mp4", ".aac"}
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+VIDEO_EXT = {".mp4", ".webm", ".mov", ".m4v", ".mkv"}
 COVER_NAMES = {"cover", "folder", "front", "album", "albumart", "art", "albumartsmall"}
 
 # ------------------------------------------------------------------ themes
@@ -245,6 +246,8 @@ DEFAULTS = {
     "skin": "",                        # folder name of the active skin in <config>/skins ("" = built-in look)
     "skin_bg_opacity": 60,
     "skin_bg_blur": False,
+    "custom_background": "",           # your own background image or video (over any skin's)
+    "bg_video_pause_hidden": True,     # pause a video background while Nexus is minimised
     "skins_installed": [],
     "geometry": "",
     "session": {},
@@ -5913,6 +5916,64 @@ def blurred_cover(win, key, w, h):
     return QPixmap.fromImage(img.scaled(side // 2 + 1, side // 2 + 1, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
 
 
+class BgVideo(QObject):
+    """a silent, looping video drawn behind the whole window (skin or your own background)."""
+    frame = Signal(QImage)
+
+    def __init__(self, parent, path):
+        super().__init__(parent)
+        from PySide6.QtMultimedia import QVideoSink
+        self.player = QMediaPlayer(self)                 # no audio output attached → silent
+        self.sink = QVideoSink(self)
+        self.player.setVideoSink(self.sink)
+        self.player.setLoops(-1)
+        self.sink.videoFrameChanged.connect(self._on_frame)
+        self.player.errorOccurred.connect(lambda _e, msg="": log_problem(f"background video: {msg}"))
+        self.last, self.max_side = 0.0, 1600
+        self.player.setSource(QUrl.fromLocalFile(str(path)))
+        self.player.play()
+
+    def _on_frame(self, fr):
+        now = _time.monotonic()
+        if now - self.last < 1 / 31:                     # 30 fps is plenty for a backdrop
+            return
+        self.last = now
+        img = fr.toImage()
+        if img.isNull():
+            return
+        if max(img.width(), img.height()) > self.max_side:
+            img = img.scaled(self.max_side, self.max_side, Qt.KeepAspectRatio, Qt.FastTransformation)
+        self.frame.emit(img)
+
+    def pause(self, on):
+        if on:
+            self.player.pause()
+        else:
+            self.player.play()
+
+    def stop(self):
+        try:
+            self.sink.videoFrameChanged.disconnect(self._on_frame)
+        except (RuntimeError, TypeError):
+            pass
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self.deleteLater()
+
+
+def background_path(win):
+    """what's behind the window: your own background if set, else the skin's. → Path or None"""
+    own = (win.cfg.get("custom_background") or "").strip()
+    if own and Path(own).exists():
+        return Path(own)
+    sk = active_skin(win)
+    if sk and sk.get("background"):
+        pth = Path(sk["path"]) / sk["background"]
+        if pth.exists():
+            return pth
+    return None
+
+
 class AmbientRoot(QWidget):
     """window background: theme colour, plus (optionally) a blurred wash of the current album cover."""
 
@@ -5927,17 +5988,34 @@ class AmbientRoot(QWidget):
         self.anim.setEndValue(1.0)
         self.anim.valueChanged.connect(self._fade)
         self.skin_bg, self.skin_bg_key = None, None
+        self.video, self.vframe = None, None
+        self.hidden_timer = QTimer(self)
+        self.hidden_timer.setInterval(1000)
+        self.hidden_timer.timeout.connect(self._check_hidden)
         self.load_skin_bg()
 
     def load_skin_bg(self):
-        sk = active_skin(self.win)
-        path = (Path(sk["path"]) / sk["background"]) if sk and sk.get("background") else None
+        path = background_path(self.win)
         blur = bool(self.win.cfg.get("skin_bg_blur"))
         key = (str(path), blur)
         if key == self.skin_bg_key:
             return
         self.skin_bg_key = key
         self.skin_bg = None
+        if self.video is not None:
+            self.video.stop()
+            self.video, self.vframe = None, None
+            self.hidden_timer.stop()
+        if path and path.suffix.lower() in VIDEO_EXT:
+            try:
+                self.video = BgVideo(self, path)
+                self.video.frame.connect(self._video_frame)
+                self.hidden_timer.start()
+            except Exception as e:
+                log_problem(f"background video: {type(e).__name__}: {e}")
+                self.video = None
+            self.update()
+            return
         if path and path.exists():
             img = QImage(str(path))
             if not img.isNull():
@@ -5948,6 +6026,28 @@ class AmbientRoot(QWidget):
                     img = small
                 self.skin_bg = QPixmap.fromImage(img)
         self.update()
+
+    def _video_frame(self, img):
+        if self.win.cfg.get("skin_bg_blur"):
+            small = img.scaled(64, 64, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            img = small.scaled(256, 256, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        self.vframe = img
+        self.update()
+
+    def _check_hidden(self):
+        """no point decoding video nobody can see."""
+        if self.video is None:
+            return
+        w = self.window()
+        hidden = bool(self.win.cfg.get("bg_video_pause_hidden", True)) and (w.isMinimized() or not w.isVisible())
+        playing = self.video.player.playbackState() == QMediaPlayer.PlayingState
+        if hidden and playing:
+            self.video.pause(True)
+        elif not hidden and not playing:
+            self.video.pause(False)
+
+    def current_frame(self):
+        return self.vframe
 
     def _fade(self, v):
         self.fade = float(v)
@@ -5983,6 +6083,14 @@ class AmbientRoot(QWidget):
             w, h = pm.width() * sc, pm.height() * sc
             p.setOpacity(max(5, min(100, int(self.win.cfg.get("skin_bg_opacity", 60)))) / 100)
             p.drawPixmap(QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h), pm, QRectF(pm.rect()))
+            p.setOpacity(1)
+        elif self.vframe is not None:
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            im = self.vframe
+            sc = max(self.width() / im.width(), self.height() / im.height())
+            w, h = im.width() * sc, im.height() * sc
+            p.setOpacity(max(5, min(100, int(self.win.cfg.get("skin_bg_opacity", 60)))) / 100)
+            p.drawImage(QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h), im, QRectF(im.rect()))
             p.setOpacity(1)
         if not self.win.cfg.get("ambient_background"):
             return
@@ -7273,9 +7381,9 @@ SKIN_KEYS = {          # look settings a skin may set → expected type
     "ambient_strength": int, "dial_visualizer": bool, "vis_style": str, "vis_color": str, "vis_sensitivity": int,
     "background_alpha": int, "skin_bg_opacity": int, "skin_bg_blur": bool,
 }
-SKIN_LIMIT = 60_000_000
+SKIN_LIMIT = 150_000_000
 _SKIN_FILE_OK = {".json", ".qss", ".css", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg",
-                 ".ttf", ".otf"}
+                 ".ttf", ".otf", ".mp4", ".webm", ".mov", ".m4v"}
 
 
 def skins_dir(win):
@@ -7339,7 +7447,7 @@ def import_skin_file(win, file):
     """unzip a .nexusskin into the skins folder (safely). returns the skin's slug."""
     import zipfile
     if os.path.getsize(file) > SKIN_LIMIT:
-        raise ValueError("that skin is too big (60 MB max)")
+        raise ValueError("that skin is too big (150 MB max)")
     with zipfile.ZipFile(file) as z:
         names = [i for i in z.infolist() if not i.is_dir()]
         meta_name = next((i.filename for i in names if i.filename.split("/")[-1] == "skin.json"
@@ -7452,9 +7560,28 @@ def current_look_as_skin(win, name, author="", description="", qss="", backgroun
             if src.is_dir():
                 shutil.copytree(src, d / sub, dirs_exist_ok=True)
     bg = old["background"] if old else ""
+    own = (cfg.get("custom_background") or "").strip()
+    if background is None and own and Path(own).exists():
+        background = ("file", own)                      # your own background goes into the skin
     if background is not None:
         if background == b"":
             bg = ""
+        elif background[0] == "file":
+            src = Path(background[1])
+            (d / "assets").mkdir(exist_ok=True)
+            for f in (d / "assets").glob("background.*"):
+                if f.resolve() != src.resolve():
+                    f.unlink()
+            bg = "assets/background" + src.suffix.lower()
+            if (d / bg).resolve() != src.resolve():
+                shutil.copy2(str(src), str(d / bg))
+            if src.suffix.lower() in VIDEO_EXT:                  # still frame for the skin gallery
+                fr = win.root.current_frame() if hasattr(win, "root") else None
+                if fr is not None and not fr.isNull():
+                    fr.scaled(640, 640, Qt.KeepAspectRatio, Qt.SmoothTransformation).save(
+                        str(d / "assets" / "poster.jpg"), "JPG", 85)
+            if own:
+                cfg["custom_background"] = ""               # now it lives in the skin
         else:
             data, mime = background
             (d / "assets").mkdir(exist_ok=True)
@@ -7504,7 +7631,10 @@ class SkinCard(QWidget):
     def __init__(self, win, name, sub, colors, bg_path="", active=False, radius=12):
         super().__init__(objectName="skincard")
         self.win, self.name, self.sub, self.col, self.active, self.r = win, name, sub, colors, active, radius
+        if bg_path and Path(bg_path).suffix.lower() in VIDEO_EXT:
+            bg_path = Path(bg_path).with_name("poster.jpg")          # videos show their still frame here
         self.bg = QPixmap(str(bg_path)) if bg_path and Path(bg_path).exists() else None
+        self.video = False
         self.setFixedSize(196, 168)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("click to apply")
@@ -7665,10 +7795,10 @@ class SkinsTab(QWidget):
         self.bg_new = None
         self.bg_label = QLabel(objectName="time")
         self.bg_label.setText((sk["background"] if sk and sk["background"] else "none"))
-        bgr.addWidget(win.tbtn("choose image", self.pick_bg, "pill"))
+        bgr.addWidget(win.tbtn("choose image / video", self.pick_bg, "pill"))
         bgr.addWidget(win.tbtn("remove", self.clear_bg, "pill"))
         bgr.addWidget(self.bg_label, 1)
-        f.addRow("background image", bgr)
+        f.addRow("background", bgr)
         f.addRow("background opacity %", settings.spin("skin_bg_opacity", 5, 100, step=5, rebuild=False))
         f.addRow("blur the background", settings.check("skin_bg_blur", rebuild=False))
         v.addLayout(f)
@@ -7809,17 +7939,27 @@ class SkinsTab(QWidget):
         QTimer.singleShot(15000, lambda: shutil.rmtree(tmp, ignore_errors=True))
 
     def pick_bg(self):
-        fn, _ = QFileDialog.getOpenFileName(self, "background image", str(Path.home()),
-                                            "Images (*.jpg *.jpeg *.png *.webp)")
+        fn, _ = QFileDialog.getOpenFileName(self, "background image or video", str(Path.home()),
+                                            "Images and videos (*.jpg *.jpeg *.png *.webp *.mp4 *.webm *.mov *.m4v)")
         if fn:
             try:
-                self.bg_new = prepare_cover(Path(fn).read_bytes(), 2560)
+                if Path(fn).suffix.lower() in VIDEO_EXT:
+                    if os.path.getsize(fn) > SKIN_LIMIT - 5_000_000:
+                        raise ValueError("that video is too big for a skin (145 MB max)")
+                    self.bg_new = ("file", fn)
+                    self.win.cfg["custom_background"] = fn          # preview it right away
+                    self.win.root.load_skin_bg()
+                else:
+                    self.bg_new = prepare_cover(Path(fn).read_bytes(), 2560)
                 self.bg_label.setText(os.path.basename(fn) + " (saved with the skin)")
             except Exception as e:
                 self.msg.setText(str(e))
 
     def clear_bg(self):
         self.bg_new = b""
+        if self.win.cfg.get("custom_background"):
+            self.win.cfg["custom_background"] = ""
+            self.win.root.load_skin_bg()
         self.bg_label.setText("none (saved with the skin)")
 
     def preview(self):
@@ -10483,6 +10623,17 @@ class Settings(QWidget):
         cv.addWidget(reset, 0, Qt.AlignLeft)
         f.addRow("colors", cw)
 
+        bgrow = QHBoxLayout()
+        own = (cfg.get("custom_background") or "").strip()
+        self.bg_name = QLabel(os.path.basename(own) if own else win.L("none (the skin's, if it has one)"),
+                              objectName="time")
+        bgrow.addWidget(win.tbtn("choose…", self.pick_background, "pill"))
+        bgrow.addWidget(win.tbtn("remove", self.clear_background, "pill"))
+        bgrow.addWidget(self.bg_name, 1)
+        f.addRow("background image / video", bgrow)
+        f.addRow("background opacity %", self.spin("skin_bg_opacity", 5, 100, step=5, rebuild=False))
+        f.addRow("blur the background", self.check("skin_bg_blur", rebuild=False))
+
         frow = QHBoxLayout()
         self.font = QFontComboBox()
         self.mono_only = ToggleSwitch(win, "mono only")
@@ -11054,6 +11205,27 @@ class Settings(QWidget):
     def set_columns(self):
         cols = [c for c, cb in self.col_checks.items() if cb.isChecked()]
         self.set("song_columns", cols, True)
+
+    def pick_background(self):
+        fn, _ = QFileDialog.getOpenFileName(self, "background image or video", str(Path.home()),
+                                            "Images and videos (*.jpg *.jpeg *.png *.webp *.gif *.mp4 *.webm *.mov "
+                                            "*.m4v *.mkv);;all files (*)")
+        if not fn:
+            return
+        self.win.cfg["custom_background"] = fn
+        self.win.cfg.save()
+        self.bg_name.setText(os.path.basename(fn))
+        self.win.root.load_skin_bg()
+        self.win.apply_settings(rebuild=False)
+        if Path(fn).suffix.lower() in VIDEO_EXT:
+            self.win.toast("video background on — it's silent, loops, and pauses while Nexus is minimised")
+
+    def clear_background(self):
+        self.win.cfg["custom_background"] = ""
+        self.win.cfg.save()
+        self.bg_name.setText(self.win.L("none (the skin's, if it has one)"))
+        self.win.root.load_skin_bg()
+        self.win.apply_settings(rebuild=False)
 
     def pick_color(self, key):
         cur = QColor(self.win.c[key])
@@ -11843,7 +12015,7 @@ class Main(QMainWindow):
         css = self.__dict__.get("_skin_preview")
         if css is None:
             css = skin_qss(self, sk) if sk else ""
-        app.setStyleSheet(build_qss(self.c, cfg, font.family(), display, css, bool(sk and sk.get("background"))))
+        app.setStyleSheet(build_qss(self.c, cfg, font.family(), display, css, bool(background_path(self))))
         self.root.load_skin_bg()
         self.display_family = display
         self.covers.clear()
