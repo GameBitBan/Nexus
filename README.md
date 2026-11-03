@@ -274,6 +274,14 @@ Click the right-hand time to toggle remaining time.
 
 `icons/` has the Nexus icon at 16–512 px plus `nexus.ico`. `python make_icon.py` redraws them if you tweak the design.
 
+## privacy & security
+
+No account, no telemetry, no ads. [PRIVACY.md](PRIVACY.md) lists every connection Nexus makes and how to turn it off; **offline mode** (settings → advanced) stops all web lookups at once. [SECURITY.md](SECURITY.md) covers how Nexus handles untrusted stuff (Soulseek files, jam peers, shared skins, tags) and how to report a vulnerability privately.
+
+## Windows .exe
+
+Every release also has **NexusSetup.exe** (a normal per-user installer, built by GitHub Actions from this source — no admin needed, uninstall from Settings → Apps). It updates itself the same way. Until it's code-signed, Smart App Control blocks it, so `install.ps1` stays the recommended install; see [CODE_SIGNING.md](CODE_SIGNING.md).
+
 ## license
 
 GPL-3.0 (see `LICENSE`) — Nexus uses [aioslsk](https://github.com/JurgenR/aioslsk), which is GPL-3.0. Bundled fonts (Inter, Doto) are under the SIL Open Font License (`fonts/`).

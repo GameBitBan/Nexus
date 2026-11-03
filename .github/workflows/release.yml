@@ -16,6 +16,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      skip: ${{ steps.v.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +40,7 @@ jobs:
         run: |
           mkdir -p dist/Nexus
           cp -r nexus.py Nexus.pyw "Install Nexus.pyw" install.ps1 requirements.txt README.md LICENSE \
+                PRIVACY.md SECURITY.md CODE_SIGNING.md installer.iss \
                 flake.nix nexus.desktop run.sh build_exe.py make_icon.py make_skins.py fonts icons skins dist/Nexus/
           # releases know where they came from, so the app updates from this repo
           sed -i "s|^GITHUB_REPO = \"\"|GITHUB_REPO = \"${GITHUB_REPOSITORY}\"|" dist/Nexus/nexus.py
@@ -53,3 +57,48 @@ jobs:
           name: Nexus ${{ steps.v.outputs.version }}
           files: dist/nexus.zip
           generate_release_notes: true
+
+  # the Windows app + installer (NexusSetup.exe), attached to the same release.
+  # unsigned until a code-signing certificate is set up (see CODE_SIGNING.md) — Smart App Control blocks unsigned
+  # exes, so install.ps1 / "Install Nexus.pyw" stay the default way to install until then.
+  windows:
+    needs: release
+    if: needs.release.outputs.skip != '1'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: build Nexus.exe
+        shell: bash
+        run: |
+          sed -i "s|^GITHUB_REPO = \"\"|GITHUB_REPO = \"${GITHUB_REPOSITORY}\"|" nexus.py
+          python build_exe.py
+
+      - name: self-test the packaged app
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\Nexus\Nexus.exe -ArgumentList '--selftest', "$PWD\selftest.txt" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { throw "self-test failed" }
+
+      - name: build NexusSetup.exe
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /DAppVersion=${{ needs.release.outputs.version }} installer.iss
+          Get-FileHash dist\NexusSetup.exe -Algorithm SHA256
+
+      # code signing goes here once a certificate exists (SignPath or Azure Artifact Signing), signing
+      # dist\Nexus\Nexus.exe before the installer step and dist\NexusSetup.exe after it.
+
+      - name: attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.release.outputs.version }}
+          files: dist/NexusSetup.exe
+

@@ -53,6 +53,15 @@ $tmp = Join-Path $env:TEMP ("nexus-install-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null
 $zip = Join-Path $tmp 'nexus.zip'
 Invoke-WebRequest $asset.browser_download_url -OutFile $zip -UseBasicParsing
+if ($asset.digest -and $asset.digest -like 'sha256:*') {
+    $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+    if ($got -ne $asset.digest.Substring(7).ToLower()) {
+        Say "the download doesn't match GitHub's checksum - stopping (try again in a minute)."
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        return
+    }
+    Say "checksum ok"
+}
 Expand-Archive $zip -DestinationPath $tmp -Force
 Get-ChildItem $tmp -Recurse | Unblock-File
 

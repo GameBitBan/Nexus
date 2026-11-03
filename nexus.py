@@ -68,13 +68,45 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.16.0"
+VERSION = "1.17.0"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 DISCORD_APP_ID = "1566983013445931018"  # Nexus's own discord app: lets anyone show what they're playing without making one
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
              ".dsf", ".opus", ".ogg", ".oga", ".mp3", ".mp4", ".aac"}
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+NET_POLICY = {"offline": False, "allow": set()}      # offline mode: only these hosts (the jam relay)
+
+
+def _harden_urllib():
+    """nexus only ever talks http(s). urllib would also open file:// and ftp:// urls — a url coming from a web api,
+    a jam relay or a skin must never be able to read local files or reach a windows share (\\\\host → ntlm leak)."""
+    class _Blocked(urllib.request.BaseHandler):
+        def _no(self, req):
+            raise urllib.error.URLError(f"blocked url scheme: {req.type}")
+        file_open = ftp_open = _no
+    opener = urllib.request.build_opener(_Blocked())
+    for h in list(opener.handlers):
+        if isinstance(h, (urllib.request.FileHandler, urllib.request.FTPHandler)):
+            opener.handlers.remove(h)
+            for lst in (opener.handle_open, opener.handle_error, opener.process_request, opener.process_response):
+                for k, v in list(lst.items()):
+                    if h in v:
+                        v.remove(h)
+    _open = opener.open
+
+    def guarded_open(url, *a, **k):
+        if NET_POLICY["offline"]:
+            from urllib.parse import urlsplit
+            full = url.full_url if hasattr(url, "full_url") else str(url)
+            host = (urlsplit(full).hostname or "").lower()
+            if host not in NET_POLICY["allow"] and host not in ("localhost", "127.0.0.1", "::1"):
+                raise urllib.error.URLError("offline mode is on (settings → advanced)")
+        return _open(url, *a, **k)
+    opener.open = guarded_open
+    urllib.request.install_opener(opener)
 VIDEO_EXT = {".mp4", ".webm", ".mov", ".m4v", ".mkv"}
 COVER_NAMES = {"cover", "folder", "front", "album", "albumart", "art", "albumartsmall"}
 
@@ -201,6 +233,7 @@ DEFAULTS = {
     "update_url": "",                  # optional: url of a version.json (instead of GitHub Releases)
     "update_repo": "",                 # optional: "owner/repo" to take updates from (default: GITHUB_REPO)
     "update_check": True,              # look for a new version on launch
+    "offline_mode": False,             # no web lookups at all (Soulseek + Jam still work when you use them)
     "import_root": "",                 # where imported music goes (default: first library folder)
     "import_move": True,
     "watch_folder": "",                # e.g. your Downloads folder
@@ -235,7 +268,7 @@ DEFAULTS = {
     "discord_song_in_status": True,    # show the song title in your status line instead of the app name
     "discord_hide_paused": True,
     "discord_cover_lookup": True,      # cover art on discord at all
-    "discord_cover_source": "upload",  # upload = your own cover (exact) · online = match on itunes/deezer only
+    "discord_cover_source": "online",  # online = match on itunes/deezer · upload = your own cover via catbox.moe
     "discord_large_image": "nexus",    # fallback art asset key uploaded to your discord app
     "discord_small_image": "nexus",
     "dl_search_seconds": 15,
@@ -326,6 +359,54 @@ def quality(t):
     return fmt
 
 
+def protect_secret(text):
+    """windows: encrypt with DPAPI (only your windows account can read it back). elsewhere: stored as-is in a
+    config file only you can read."""
+    text = str(text or "")
+    if not text or text.startswith("dpapi:") or not sys.platform.startswith("win"):
+        return text
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+        raw = text.encode("utf-8")
+        inp = BLOB(len(raw), ctypes.cast(ctypes.create_string_buffer(raw, len(raw)), ctypes.POINTER(ctypes.c_char)))
+        out = BLOB()
+        if not ctypes.windll.crypt32.CryptProtectData(ctypes.byref(inp), "nexus", None, None, None, 0x1,
+                                                      ctypes.byref(out)):
+            return text
+        data = ctypes.string_at(out.pbData, out.cbData)
+        ctypes.windll.kernel32.LocalFree(out.pbData)
+        return "dpapi:" + _b64.b64encode(data).decode()
+    except Exception:
+        return text
+
+
+def reveal_secret(text):
+    text = str(text or "")
+    if not text.startswith("dpapi:"):
+        return text
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+        raw = _b64.b64decode(text[6:])
+        inp = BLOB(len(raw), ctypes.cast(ctypes.create_string_buffer(raw, len(raw)), ctypes.POINTER(ctypes.c_char)))
+        out = BLOB()
+        if not ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(inp), None, None, None, None, 0x1,
+                                                        ctypes.byref(out)):
+            return ""
+        data = ctypes.string_at(out.pbData, out.cbData)
+        ctypes.windll.kernel32.LocalFree(out.pbData)
+        return data.decode("utf-8")
+    except Exception:
+        return ""
+
+
 class Config(dict):
     def __init__(self, path):
         super().__init__(copy.deepcopy(DEFAULTS))
@@ -341,7 +422,11 @@ class Config(dict):
 
     def save(self):
         try:
+            if self.get("slsk_password") and not str(self["slsk_password"]).startswith("dpapi:"):
+                self["slsk_password"] = protect_secret(self["slsk_password"])
             save_json(self.path, self)
+            if os.name == "posix":
+                os.chmod(self.path, 0o600)                 # it holds your soulseek login
         except OSError as e:
             print("config save failed:", e)
 
@@ -444,7 +529,7 @@ def read_track(path):
     album = _first(tags, "album") or p.parent.name
     aa = _first(tags, "albumartist") or artist
     year = (_first(tags, "date") or _first(tags, "year"))[:4]
-    key = hashlib.md5(f"{aa}|{album}".lower().encode()).hexdigest()[:16]
+    key = hashlib.md5(f"{aa}|{album}".lower().encode(), usedforsecurity=False).hexdigest()[:16]
     return dict(
         path=str(path), title=_first(tags, "title") or p.stem, artist=artist,
         album=album, albumartist=aa, year=year, genre=_first(tags, "genre"),
@@ -1212,7 +1297,7 @@ class SongModel(QAbstractTableModel):
             return int(Qt.AlignLeft | Qt.AlignVCenter)
         if role == Qt.ToolTipRole:
             kind = "lossy (compressed — not lossless)" if is_lossy(t) else "lossless"
-            return f"{t['path']}\n{quality(t)}  {t['channels']}ch  ·  {kind}"
+            return _escape_tooltip(f"{t['path']}\n{quality(t)}  {t['channels']}ch  ·  {kind}")
         return None
 
 
@@ -3254,6 +3339,8 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+
+_harden_urllib()
 import uuid
 
 LOSSLESS_EXT = {".flac", ".wav", ".aiff", ".aif", ".wv", ".ape", ".alac", ".dsf"}
@@ -3443,9 +3530,36 @@ def human_size(n):
         n /= 1024
 
 
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
 def safe_name(s, fallback="Unknown"):
     s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(s or "")).strip().rstrip(". ")
+    if s.split(".")[0].upper() in _WIN_RESERVED:
+        s = "_" + s
     return (s or fallback)[:120]
+
+
+class _SafeNaming:
+    """last word on where a soulseek download is written: always inside the download folder, with a clean name.
+    (the remote side decides the path it advertises — "..\\..\\x" must not climb out.)"""
+    NAME = "nexus-safe"
+
+    def __init__(self, root):
+        self.root = os.path.realpath(root)
+
+    def should_be_applied(self, local_dir, local_filename):
+        return True
+
+    def apply(self, remote_path, local_dir, local_filename):
+        name = safe_name(local_filename, "track")
+        d = os.path.realpath(local_dir)
+        if os.path.commonpath([d, self.root]) != self.root:
+            d = self.root
+        else:
+            rel = os.path.relpath(d, self.root)
+            d = self.root if rel == "." else os.path.join(self.root, *[safe_name(x, "_") for x in rel.split(os.sep)])
+        return d, name
 
 
 class Importer:
@@ -3639,7 +3753,7 @@ class SoulseekNative:
 
     def creds(self):
         cfg = self.win.cfg
-        return (cfg.get("slsk_user") or "").strip(), cfg.get("slsk_password") or ""
+        return (cfg.get("slsk_user") or "").strip(), reveal_secret(cfg.get("slsk_password"))
 
     def ready(self):
         u, p = self.creds()
@@ -3788,6 +3902,10 @@ class SoulseekNative:
         )
         self.client = SoulSeekClient(settings, shares_cache=SharesShelveCache(str(data)),
                                      transfer_cache=TransferShelveCache(str(data)))
+        try:
+            self.client.shares.naming_strategies.append(_SafeNaming(str(dl)))
+        except Exception as e:
+            self.log.info("couldn't add safe naming: %s", e)
         try:
             from aioslsk.events import KickedEvent, SessionDestroyedEvent, SessionInitializedEvent
             self.client.events.register(KickedEvent, self._on_kicked)
@@ -5221,7 +5339,7 @@ class DiscordPresence:
             req = urllib.request.Request(f"https://discord.com/api/v9/oauth2/applications/{cid}/assets",
                                          headers={"User-Agent": f"Nexus/{VERSION}"})
             with urllib.request.urlopen(req, timeout=6) as r:
-                return [a.get("name") for a in json.loads(r.read().decode("utf-8")) if a.get("name")]
+                return [a.get("name") for a in json.loads(r.read(30_000_000).decode("utf-8")) if a.get("name")]
         except Exception:
             return None
 
@@ -5246,7 +5364,7 @@ class DiscordPresence:
     def _get_json(self, url):
         req = urllib.request.Request(url, headers={"User-Agent": f"Nexus/{VERSION}"})
         with urllib.request.urlopen(req, timeout=6) as r:
-            return json.loads(r.read().decode("utf-8"))
+            return json.loads(r.read(30_000_000).decode("utf-8"))
 
     def _online(self, artist, album, title):
         a, al = self._norm(artist), self._norm(album)
@@ -6596,7 +6714,7 @@ def online_album_lookup(artist, album):
     def get(url):
         req = urllib.request.Request(url, headers={"User-Agent": f"Nexus/{VERSION}"})
         with urllib.request.urlopen(req, timeout=8) as r:
-            return json.loads(r.read().decode("utf-8"))
+            return json.loads(r.read(30_000_000).decode("utf-8"))
 
     def score(name, who):
         n, w = norm(name), norm(who)
@@ -7194,7 +7312,7 @@ class TagEditorPage(QWidget):
             self.b_folder.hide()
             return
         covers = [self.current_cover(p) for p in sel]
-        datas = {hashlib.md5(d).hexdigest() if d else None for d, _ in covers}
+        datas = {hashlib.md5(d, usedforsecurity=False).hexdigest() if d else None for d, _ in covers}
         kinds = {k for _, k in covers}
         if len(datas) > 1:
             self.cover.show_bytes(None, self.win.L("different covers"))
@@ -7397,14 +7515,23 @@ def skin_slug(name):
     return s[:48] or "skin"
 
 
+def _skin_rel(path):
+    """a path inside a skin folder, or "" — no absolute paths, drives, network shares or "..". """
+    p = str(path or "").strip().replace("\\", "/")
+    parts = [x for x in p.split("/") if x not in ("", ".")]
+    if not p or p.startswith("/") or ":" in p or ".." in parts or not parts:
+        return ""
+    return "/".join(parts)
+
+
 def clean_skin_meta(meta):
     """keep only known keys with the right types; colours must look like colours."""
     out = {"name": str(meta.get("name") or "Untitled skin")[:60], "author": str(meta.get("author") or "")[:60],
            "description": str(meta.get("description") or "")[:300], "version": str(meta.get("version") or "1.0")[:20],
            "format": SKIN_FORMAT, "background": "", "settings": {}, "colors": {}}
-    bg = str(meta.get("background") or "")
-    if bg and not bg.startswith("/") and ".." not in bg.replace("\\", "/").split("/"):
-        out["background"] = bg.replace("\\", "/")
+    bg = _skin_rel(meta.get("background"))
+    if bg:
+        out["background"] = bg
     for k, v in (meta.get("colors") or {}).items():
         if k in COLOR_KEYS and isinstance(v, str) and QColor(v).isValid():
             out["colors"][k] = QColor(v).name()
@@ -7498,7 +7625,14 @@ def skin_qss(win, skin):
     for k in sorted(COLOR_KEYS, key=len, reverse=True):
         q = q.replace("@" + k, c[k])
     base = Path(skin["path"]).as_posix()
-    return re.sub(r"url\(\s*['\"]?skin:([^)'\"]+)['\"]?\s*\)", lambda m: f'url("{base}/{m.group(1).strip()}")', q)
+
+    def fix(m):
+        # only the skin's own files: anything else (local paths, \\\\server\\share, http…) is dropped
+        ref = m.group(1).strip().strip("'\"")
+        rel = _skin_rel(ref[5:]) if ref.lower().startswith("skin:") else ""
+        return f'url("{base}/{rel}")' if rel else "url()"
+    q = re.sub(r"url\(([^)]*)\)", fix, q, flags=re.I)
+    return re.sub(r"@import[^;]*;?", "", q, flags=re.I)
 
 
 def active_skin(win):
@@ -8002,7 +8136,7 @@ def deezer_get(path, tries=3):
     for i in range(tries):
         req = urllib.request.Request(url, headers={"User-Agent": f"Nexus/{VERSION}"})
         with urllib.request.urlopen(req, timeout=10) as r:
-            d = json.loads(r.read().decode("utf-8"))
+            d = json.loads(r.read(30_000_000).decode("utf-8"))
         err = d.get("error") if isinstance(d, dict) else None
         if not err:
             return d
@@ -8168,7 +8302,7 @@ class NetImages(QObject):
             return None
         if url in self.mem:
             return self.mem[url]
-        f = self.dir / (hashlib.md5(url.encode()).hexdigest() + ".jpg")
+        f = self.dir / (hashlib.md5(url.encode(), usedforsecurity=False).hexdigest() + ".jpg")
         if f.exists():
             img = QImage(str(f))
             if not img.isNull():
@@ -8712,9 +8846,11 @@ def jam_norm_code(code):
 
 class JamCrypto:
     def __init__(self, code):
+        # scrypt, so a code can't be brute-forced from its relay topic in seconds (6 characters is only ~30 bits)
         c = jam_norm_code(code).encode()
-        self.topic = "nexusjam" + hashlib.sha256(b"topic:" + c).hexdigest()[:28]
-        self.key = hashlib.sha256(b"key:nexus-jam:" + c).digest()
+        k = hashlib.scrypt(c, salt=b"nexus-jam-v2", n=1 << 14, r=8, p=1, dklen=64)
+        self.topic = "nexusjam2" + k[32:46].hex()
+        self.key = k[:32]
 
     def seal(self, obj):
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -8725,7 +8861,11 @@ class JamCrypto:
     def open(self, text):
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         raw = _b64.urlsafe_b64decode(text.encode())
-        return json.loads(_zlib.decompress(AESGCM(self.key).decrypt(raw[:12], raw[12:], None)))
+        d = _zlib.decompressobj()
+        out = d.decompress(AESGCM(self.key).decrypt(raw[:12], raw[12:], None), 1_000_000)
+        if d.unconsumed_tail:
+            raise ValueError("too big")
+        return json.loads(out)
 
 
 class JamSource:
@@ -8890,6 +9030,7 @@ class JamService(QObject):
         self.stop_ev = None
         self.sending = {}                # host: rid → {"cancel": bool}
         self.rx, self.rx_cur = {}, None  # guest: incoming files
+        self.expect = set()              # guest: download requests we actually made
 
     # ---- thread plumbing
     def _ensure_loop(self):
@@ -8941,9 +9082,16 @@ class JamService(QObject):
                         text = ev.get("message")
                         if ev.get("event") != "message" or not text:
                             continue
-                        if ev.get("attachment") and ev["attachment"].get("url"):
-                            with urllib.request.urlopen(ev["attachment"]["url"], timeout=15) as a:
-                                text = a.read().decode()
+                        att = (ev.get("attachment") or {}).get("url") or ""
+                        if att:
+                            from urllib.parse import urlsplit
+                            if urlsplit(att).netloc != urlsplit(JAM_RELAY).netloc or \
+                                    urlsplit(att).scheme not in ("https", "http"):
+                                continue                 # only the relay's own attachments
+                            with urllib.request.urlopen(att, timeout=15) as a:
+                                text = a.read(200_000).decode()
+                        if len(text) > 200_000:
+                            continue
                         try:
                             msg = self.crypto.open(text)
                         except Exception:
@@ -9175,6 +9323,10 @@ class JamService(QObject):
 
     # ---- sharing files (like soulseek, but straight from the host's library)
     CHUNK = 32 * 1024
+    RX_LIMIT = 8_000_000_000             # one download request can't be bigger than this
+
+    def expect_files(self, rid):
+        self.expect.add(rid)
 
     def send_files(self, peer, rid, files):
         """host: files = [(path, name-for-the-listener, size)]."""
@@ -9238,10 +9390,21 @@ class JamService(QObject):
     def _rx_ctl(self, d):
         """guest (jam thread): file start / end / all done."""
         rid, t = str(d.get("rid", "")), d.get("t")
+        if rid not in self.expect:
+            return                                   # we never asked for this
         job = self.rx.setdefault(rid, {"got": 0, "total": int(d.get("total") or 1), "files": [], "f": None,
                                        "n": int(d.get("n") or 1), "i": 0, "last": 0.0})
         if t == "fstart":
             self._rx_close(job)
+            if len(job["files"]) >= 500 or int(d.get("total") or 0) > self.RX_LIMIT:
+                job["f"], job["dead"] = None, True
+                return
+            ext = os.path.splitext(str(d.get("name", "")))[1].lower()
+            if ext not in AUDIO_EXT | IMG_EXT:
+                job["f"] = None                      # skip anything that isn't music or cover art
+                job["i"] = int(d.get("i") or 0)
+                self.rx_cur = rid
+                return
             parts = [safe_name(x, "file") for x in str(d.get("name", "file")).replace("\\", "/").split("/")
                      if x not in ("", ".", "..")][-3:] or ["file"]
             dest = self.win.dir / "jam-incoming" / rid / Path(*parts)
@@ -9252,6 +9415,7 @@ class JamService(QObject):
                 log_problem(f"jam receive: {e}")
                 job["f"] = None
             job["i"], job["n"], job["total"] = int(d.get("i") or 0), int(d.get("n") or 1), int(d.get("total") or 1)
+            job["left"] = int(d.get("size") or 0)
             self.rx_cur = rid
         elif t == "fend":
             if job.get("f") is not None:
@@ -9264,6 +9428,7 @@ class JamService(QObject):
         elif t == "fdone":
             self._rx_close(job)
             self.rx.pop(rid, None)
+            self.expect.discard(rid)
             self.rx_cur = None
             self.got.emit({"t": "fdone", "rid": rid, "ok": bool(d.get("ok")), "paths": job["files"]})
 
@@ -9271,12 +9436,20 @@ class JamService(QObject):
         job = self.rx.get(self.rx_cur)
         if job is None:
             return
+        job["got"] += len(b)
         if job.get("f") is not None:
+            job["left"] = job.get("left", 0) - len(b)
+            if job["left"] < 0 or job["got"] > min(self.RX_LIMIT, job["total"] + 1_000_000):
+                self._rx_close(job)              # more than they said: drop the file
+                try:
+                    os.remove(str(job["path"]) + ".part")
+                except OSError:
+                    pass
+                return
             try:
                 job["f"].write(b)
             except OSError:
                 pass
-        job["got"] += len(b)
         if _time.monotonic() - job["last"] > 0.3:
             job["last"] = _time.monotonic()
             self.got.emit({"t": "fprog", "rid": self.rx_cur, "got": job["got"], "total": job["total"],
@@ -9320,6 +9493,7 @@ class JamService(QObject):
         for job in self.rx.values():
             self._rx_close(job)
         self.rx, self.rx_cur = {}, None
+        self.expect = set()
         self.pcs, self.chans, self.names = {}, {}, {}
         self.state.emit("off", detail)
 
@@ -9728,6 +9902,7 @@ class JamPage(QWidget):
         label = (f"“{info[3]}”" if what == "album" else f"“{info[1]}”") if info else f"this {what}"
         rid = uuid.uuid4().hex[:8]
         self.my_reqs[rid] = label
+        self.jam.expect_files(rid)
         self.jam.send({"t": "dlreq", "rid": rid, "id": tid, "what": what})
         host = self.jam.host_name or "the host"
         self.show_dl(f"asked {host} for {label}…" if self.dl_mode == "ask" else f"getting {label}…")
@@ -9758,6 +9933,9 @@ class JamPage(QWidget):
         if mode == "no" or tr is None:
             self.jam.send({"t": "dlno", "rid": rid, "why": "downloads are off" if mode == "no" else "song not found"},
                           peer)
+            return
+        if sum(1 for r in self.requests.values() if r["peer"] == peer and not r.get("finished")) >= 3:
+            self.jam.send({"t": "dlno", "rid": rid, "why": "one at a time — wait for the others to finish"}, peer)
             return
         if d.get("what") == "album":
             tracks = sorted(w.albums[tr["album_key"]]["tracks"] if tr["album_key"] in w.albums else [tr],
@@ -9842,6 +10020,7 @@ class JamPage(QWidget):
         if not req:
             return
         if d.get("done"):
+            req["finished"] = True
             req["item"].setText(req["text"] + "\n" + self.win.L("sent ✓" if d.get("ok") else "stopped"))
             if d.get("ok"):
                 self.win.toast(f"sent {req['label']} to {req['name']}")
@@ -9885,7 +10064,29 @@ class JamPage(QWidget):
         if not self.people:
             self.people_list.addItem(self.win.L("nobody yet…"))
 
+    @staticmethod
+    def _clip(d):
+        """messages come from another computer: keep every text a sane size."""
+        for k, n in (("text", 500), ("from_name", 24), ("name", 24), ("title", 300), ("artist", 300),
+                     ("album", 300), ("fmt", 40), ("why", 120)):
+            if k in d:
+                d[k] = str(d[k])[:n]
+        if len(str(d.get("cover", ""))) > 1_500_000:
+            d.pop("cover", None)
+        if isinstance(d.get("queue"), list):
+            d["queue"] = [[str(x[0])[:200], str(x[1])[:200]] for x in d["queue"][:20]
+                          if isinstance(x, (list, tuple)) and len(x) >= 2]
+        if isinstance(d.get("items"), list):
+            d["items"] = [x for x in d["items"][:250] if isinstance(x, (list, tuple)) and len(x) >= 5]
+        ly = d.get("lyrics")
+        if ly is not None and (not isinstance(ly, dict) or len(json.dumps(ly)) > 200_000):
+            d["lyrics"] = None
+        return d
+
     def on_msg(self, d):
+        if not isinstance(d, dict):
+            return
+        d = self._clip(d)
         w, t = self.win, d.get("t")
         if self.jam.role == "host":
             peer, name = d.get("peer"), d.get("name", "friend")
@@ -9948,7 +10149,8 @@ class JamPage(QWidget):
             for title, artist in d.get("queue", []):
                 self.g_queue.addItem(f"{title}  —  {artist}")
         elif t == "lib":
-            self.lib += [tuple(x) for x in d.get("items", [])]
+            if len(self.lib) < 100_000:
+                self.lib += [(x[0], str(x[1])[:200], str(x[2])[:200], str(x[3])[:200], x[4]) for x in d.get("items", [])]
             self.filter_lib(self.g_search.text())
         elif t == "perm":
             self.dl_mode = d.get("dl") or "no"
@@ -10057,7 +10259,9 @@ def parse_import(name, data, depth=0):
     res = ImportResult("files")
     if low.endswith(".zip") and depth < 3:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
-            names = [n for n in z.namelist() if not n.endswith("/")]
+            if sum(i.file_size for i in z.infolist()) > 2_000_000_000:
+                raise ValueError("that zip unpacks way too big")
+            names = [n for n in z.namelist() if not n.endswith("/") and z.getinfo(n).file_size < 300_000_000]
             # apple's export: tracks and playlists are separate files that refer to each other
             apple_tracks = next((n for n in names if n.lower().endswith("apple music library tracks.json")), None)
             for n in names:
@@ -10835,7 +11039,9 @@ class Settings(QWidget):
         sx.setWordWrap(True)
         fd.addRow(sx)
         fd.addRow("username", self.line("slsk_user"))
-        spw = self.line("slsk_password")
+        spw = QLineEdit(reveal_secret(cfg.get("slsk_password")))
+        spw.editingFinished.connect(lambda: self.set("slsk_password", protect_secret(spw.text()), False)
+                                    if reveal_secret(cfg.get("slsk_password")) != spw.text() else None)
         spw.setEchoMode(QLineEdit.Password)
         fd.addRow("password", spw)
         shares = list(cfg["library_folders"]) if cfg.get("slsk_share_library", True) else []
@@ -10991,6 +11197,11 @@ class Settings(QWidget):
         uv.addSpacing(16)
         uf = QFormLayout()
         uf.addRow("check for updates on launch", self.check("update_check", rebuild=False))
+        off = self.check("offline_mode", rebuild=False)
+        off.setToolTip("no cover/lyrics/discover lookups, no update checks, no discord art. Soulseek and Jam still "
+                       "connect when you use them. see PRIVACY.md for everything Nexus talks to")
+        off.toggled.connect(lambda on: NET_POLICY.__setitem__("offline", bool(on)))
+        uf.addRow("offline mode", off)
         repo_ed = self.line("update_repo")
         repo_ed.setPlaceholderText(GITHUB_REPO or "owner/repo on GitHub")
         uf.addRow("GitHub releases from", repo_ed)
@@ -11477,6 +11688,9 @@ class Main(QMainWindow):
         self.presence_timer.timeout.connect(self._push_presence)
         self._pres_pos = (0, 0.0)
         self.ui_call = UiCall(self)
+        NET_POLICY["offline"] = bool(self.cfg.get("offline_mode"))
+        from urllib.parse import urlsplit as _us
+        NET_POLICY["allow"] = {(_us(JAM_RELAY).hostname or "").lower()}
         QTimer.singleShot(6000, self.maybe_offer_discord)
         if int(self.cfg.get("background_alpha", 100)) < 100:
             self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -12626,7 +12840,7 @@ class Main(QMainWindow):
             data = _b64.b64decode(b64)
         except Exception:
             return ""
-        key = "jam-" + hashlib.sha1(data).hexdigest()[:14]
+        key = "jam-" + hashlib.sha1(data, usedforsecurity=False).hexdigest()[:14]
         p = self.dir / "covers" / f"{key}.jpg"
         if not p.exists():
             try:
@@ -12983,19 +13197,20 @@ class Main(QMainWindow):
     # ---------------------------------------------------------- updates
     UPDATE_FILES = ("nexus.py", "Nexus.pyw", "Install Nexus.pyw", "requirements.txt", "README.md",
                     "make_icon.py", "make_skins.py", "build_exe.py", "flake.nix", "nexus.desktop", "run.sh",
-                    "LICENSE", "install.ps1")
+                    "LICENSE", "install.ps1",
+                    "PRIVACY.md", "SECURITY.md", "CODE_SIGNING.md", "installer.iss")
 
     def pick_update(self):
         p, _ = QFileDialog.getOpenFileName(self, "Nexus update", str(Path.home() / "Downloads"), "zip (*.zip)")
         if p:
             self.install_update(p)
 
-    def install_update(self, zpath, confirmed=False):
+    def install_update(self, zpath, confirmed=False, manual=True):
         import re
         import zipfile
         dest = resource_dir()
         if getattr(sys, "frozen", False):
-            self.toast("this is the .exe build — install the new version over it instead")
+            self.toast("this is the installed app — it updates itself from GitHub (settings → update → check now)")
             return
         if not os.access(dest, os.W_OK):
             self.toast(f"{dest} is read-only (NixOS?) — update through nix instead")
@@ -13014,8 +13229,13 @@ class Main(QMainWindow):
             m = re.search(r'^VERSION = "([^"]+)"', z.read(main).decode("utf-8", "replace"), re.M)
             newv = m.group(1) if m else "?"
             if not confirmed:
-                self.toast(f"{APP_NAME} {newv} is ready (you have {VERSION})", "update + restart",
-                           lambda: self.install_update(zpath, confirmed=True), 30000)
+                if manual:      # a zip someone handed you: it replaces nexus's code, so say so plainly
+                    self.toast(f"this zip replaces Nexus's program files with version {newv}. only install zips from "
+                               f"github.com/{GITHUB_REPO or 'GameBitBan/Nexus'}/releases", "install anyway",
+                               lambda: self.install_update(zpath, confirmed=True), 30000)
+                else:
+                    self.toast(f"{APP_NAME} {newv} is ready (you have {VERSION})", "update + restart",
+                               lambda: self.install_update(zpath, confirmed=True, manual=False), 30000)
                 return
             backup = dest / "_previous"
             backup.mkdir(exist_ok=True)
@@ -13036,6 +13256,14 @@ class Main(QMainWindow):
                     shutil.copyfileobj(src, out)
         self.restart_app()
 
+    def run_installer(self, path):
+        """exe build: run the downloaded (checksum-verified) installer silently; it reopens Nexus when done."""
+        from PySide6.QtCore import QProcess
+        release_instance()
+        self.close()
+        QProcess.startDetached(path, ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"])
+        QApplication.instance().quit()
+
     def restart_app(self):
         from PySide6.QtCore import QProcess
         dest = resource_dir()
@@ -13043,7 +13271,10 @@ class Main(QMainWindow):
             else dest / "nexus.py"
         release_instance()
         self.close()
-        QProcess.startDetached(sys.executable, [str(launcher), "--restarted"], str(dest))
+        if getattr(sys, "frozen", False):
+            QProcess.startDetached(sys.executable, ["--restarted"], str(Path(sys.executable).parent))
+        else:
+            QProcess.startDetached(sys.executable, [str(launcher), "--restarted"], str(dest))
         QApplication.instance().quit()
 
     def update_repo(self):
@@ -13067,33 +13298,56 @@ class Main(QMainWindow):
             hdr = {"User-Agent": f"Nexus/{VERSION}", "Accept": "application/vnd.github+json"}
             if url:
                 with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=10) as r:
-                    meta = json.loads(r.read().decode("utf-8"))
+                    meta = json.loads(r.read(30_000_000).decode("utf-8"))
                 ver, zurl = str(meta.get("version", "")), meta.get("zip", "")
             else:
                 api = f"https://api.github.com/repos/{repo}/releases/latest"
                 with urllib.request.urlopen(urllib.request.Request(api, headers=hdr), timeout=10) as r:
-                    rel = json.loads(r.read().decode("utf-8"))
+                    rel = json.loads(r.read(30_000_000).decode("utf-8"))
                 ver = str(rel.get("tag_name", "")).lstrip("vV")
                 assets = rel.get("assets") or []
-                a = next((x for x in assets if x.get("name", "").lower() == "nexus.zip"), None) or \
-                    next((x for x in assets if x.get("name", "").lower().endswith(".zip")), None)
+                if getattr(sys, "frozen", False):           # the installed .exe updates with the installer
+                    a = next((x for x in assets if x.get("name", "").lower() == "nexussetup.exe"), None)
+                else:
+                    a = next((x for x in assets if x.get("name", "").lower() == "nexus.zip"), None) or \
+                        next((x for x in assets if x.get("name", "").lower().endswith(".zip")), None)
                 zurl = a.get("browser_download_url", "") if a else ""
+                digest = str(a.get("digest") or "") if a else ""
             if not ver or vtuple(ver) <= vtuple(VERSION) or not zurl:
                 return ("none", ver)
-            tmp = Path(tempfile.gettempdir()) / f"nexus-{ver}.zip"
+            if not url and not zurl.startswith(f"https://github.com/{repo}/releases/download/"):
+                raise ValueError("the release points somewhere other than GitHub — not installing it")
+            import hashlib as _h
+            ext = ".exe" if zurl.lower().endswith(".exe") else ".zip"
+            fd, tmp = tempfile.mkstemp(prefix=f"nexus-{ver}-", suffix=ext, dir=str(self.dir))
+            sha, size = _h.sha256(), 0
             with urllib.request.urlopen(urllib.request.Request(zurl, headers={"User-Agent": f"Nexus/{VERSION}"}),
-                                        timeout=60) as r, open(tmp, "wb") as out:
-                shutil.copyfileobj(r, out)
-            return ("got", str(tmp))
+                                        timeout=60) as r, os.fdopen(fd, "wb") as out:
+                while True:
+                    b = r.read(1 << 20)
+                    if not b:
+                        break
+                    size += len(b)
+                    if size > 300_000_000:
+                        raise ValueError("update is suspiciously big")
+                    sha.update(b)
+                    out.write(b)
+            if digest.startswith("sha256:") and sha.hexdigest() != digest.split(":", 1)[1].lower():
+                os.remove(tmp)
+                raise ValueError("the download doesn't match GitHub's checksum — not installing it")
+            return ("got", str(tmp), ver)
 
         def done(res, err):
             if err:
                 if manual:
                     self.toast(f"update check failed: {err}")
                 return
-            kind, val = res
-            if kind == "got":
-                self.install_update(val)
+            kind, val = res[0], res[1]
+            if kind == "got" and val.lower().endswith(".exe"):
+                self.toast(f"{APP_NAME} {res[2] if len(res) > 2 else ''} is ready", "update + restart",
+                           lambda: self.run_installer(val), 30000)
+            elif kind == "got":
+                self.install_update(val, manual=False)
             elif manual:
                 self.toast(f"you're up to date ({VERSION})")
         self.bg(work, done)
@@ -13366,6 +13620,33 @@ def _ping_running(name, wait_reply_ms=1500):
     return ok
 
 
+class _PlainText(QObject):
+    """every QLabel shows plain text: song titles, tags, soulseek names, jam chat, lyrics… can come from strangers,
+    and qt would otherwise render html in them (including <img src> pointing at local files or network shares)."""
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Polish and isinstance(obj, QLabel):
+            obj.setTextFormat(Qt.PlainText)
+        return False
+
+
+def _escape_tooltip(text):
+    import html
+    text = "" if text is None else str(text)
+    if not text:
+        return ""
+    return "<p style='white-space:pre-wrap'>" + html.escape(text).replace("\n", "<br>") + "</p>"
+
+
+def harden_qt(app):
+    app._plain = _PlainText(app)
+    app.installEventFilter(app._plain)
+    if not getattr(QWidget, "_nexus_safe_tip", False):
+        _orig = QWidget.setToolTip
+        QWidget.setToolTip = lambda self, text: _orig(self, _escape_tooltip(text))
+        QWidget._nexus_safe_tip = True
+
+
 def single_instance(app, restarted=False):
     """a second Nexus would sign in to Soulseek with the same name and kick the first one off (and both
     would fight over the audio device): if one is already running, bring it to the front instead.
@@ -13380,6 +13661,7 @@ def single_instance(app, restarted=False):
         return None
     QLocalServer.removeServer(name)                  # stale socket from a crash / a copy that's closing
     server = QLocalServer(app)
+    server.setSocketOptions(QLocalServer.UserAccessOption)
     if not server.listen(name):
         return False
     _INSTANCE["server"], _INSTANCE["name"] = server, name
@@ -13397,11 +13679,43 @@ def release_instance():
         _INSTANCE["server"] = None
 
 
+def selftest(out_path):
+    """--selftest report.txt: load every part a packaged build needs, write a report, exit 1 if anything's missing."""
+    lines, ok = [f"nexus {VERSION} · python {sys.version.split()[0]} · frozen={getattr(sys, 'frozen', False)}"], True
+    for mod in ("PySide6.QtMultimedia", "PySide6.QtNetwork", "mutagen", "numpy", "av", "sounddevice", "aioslsk",
+                "aiortc", "cryptography", "aioice", "pylibsrtp"):
+        try:
+            m = __import__(mod, fromlist=["_"])
+            lines.append(f"ok    {mod} {getattr(m, '__version__', '')}")
+        except Exception as e:
+            ok = False
+            lines.append(f"FAIL  {mod}: {type(e).__name__}: {e}")
+    try:
+        e_ok, why = engine_available()
+        lines.append("engine: " + ("ok" if e_ok else f"unavailable ({why})"))
+        j_ok, why = jam_available()
+        lines.append("jam: " + ("ok" if j_ok else f"unavailable ({why})"))
+        ok = ok and j_ok
+    except Exception as e:
+        ok = False
+        lines.append(f"FAIL  checks: {e}")
+    for d in ("fonts", "icons", "skins"):
+        n = len(list((resource_dir() / d).glob("*"))) if (resource_dir() / d).is_dir() else 0
+        lines.append(f"{'ok  ' if n else 'FAIL'}  {d}/ ({n} files)")
+        ok = ok and n > 0
+    Path(out_path).write_text("\n".join(lines) + "\n", "utf-8")
+    sys.exit(0 if ok else 1)
+
+
 def main():
     sys.excepthook = _log_uncaught
+    if "--selftest" in sys.argv:
+        i = sys.argv.index("--selftest")
+        selftest(sys.argv[i + 1] if i + 1 < len(sys.argv) else "selftest.txt")
     if QApplication.instance() is None:
         QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
+    harden_qt(app)
     if sys.platform.startswith("win") and not (resource_dir() / "no_aumid").exists():
         try:  # own taskbar identity + icon instead of python's (matches the installer's shortcut)
             import ctypes
