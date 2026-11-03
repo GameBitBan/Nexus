@@ -165,7 +165,13 @@ Settings, Equalizer and Lyrics open inside the main window. Hit **Done** (or the
 
 **classic** — text sidebar instead of the rail (the terminal preset uses this).
 
-Switch in settings → look → layout. Record size, spin speed, and spin on/off are there too.
+**tabs** — navigation across the top bar and your playlists as a strip of covers underneath, so the library gets the full width.
+
+**focus** — the record panel moves to the left and gets big, with the library beside it. For when the music is the point.
+
+**mini** — a small player window: the record, the song, the controls and up next. **Pin on top** keeps it above other windows; **Full** (or `ctrl+m`) goes back to the layout you came from at the size you had. `ctrl+m` also switches into it from anywhere.
+
+Switch in settings → look → layout. The layout you pick stays when you change skins. Record size, spin speed, and spin on/off are there too.
 
 ## skins
 

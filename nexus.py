@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.18.1"
+VERSION = "1.19.0"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 DISCORD_APP_ID = "1566983013445931018"  # Nexus's own discord app: lets anyone show what they're playing without making one
 
@@ -6320,7 +6320,7 @@ class DialWidget(QWidget):
         self.relayout()
 
     def relayout(self):
-        s = int(self.win.cfg.get("dial_size", 290))
+        s = dial_size(self.win)
         self.setFixedSize(s, s)
         self.update()
 
@@ -6455,7 +6455,7 @@ class NowPanel(QWidget):
         super().__init__(objectName="nowpanel")
         self.win = win
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setFixedWidth(int(win.cfg.get("dial_size", 290)) + 44)
+        self.setFixedWidth(dial_size(win) + 44)
         v = QVBoxLayout(self)
         v.setContentsMargins(22, 18, 22, 16)
         v.setSpacing(3)
@@ -6503,7 +6503,7 @@ class NowPanel(QWidget):
 
     def relayout(self):
         self.dial.relayout()
-        self.setFixedWidth(int(self.win.cfg.get("dial_size", 290)) + 44)
+        self.setFixedWidth(dial_size(self.win) + 44)
 
     def set_track(self, t):
         w = self.win
@@ -8212,6 +8212,18 @@ def active_skin(win):
     return m
 
 
+LAYOUTS = (("studio", "studio — icon rail, library, record panel"),
+           ("classic", "classic — text sidebar with playlists"),
+           ("tabs", "tabs — navigation across the top, full-width library"),
+           ("focus", "focus — big record on the left, library on the right"),
+           ("mini", "mini — small player window (ctrl+m)"))
+
+
+def dial_size(win):
+    base = int(win.cfg.get("dial_size", 290))
+    return {"focus": max(base, 400), "mini": 330}.get(win.cfg.get("layout"), base)
+
+
 def apply_skin(win, slug):
     """skin settings on top of the defaults (so nothing from the old look leaks through), colours, stylesheet."""
     d = skins_dir(win) / slug
@@ -8219,6 +8231,7 @@ def apply_skin(win, slug):
     if not m:
         raise ValueError("skin not found")
     cfg = win.cfg
+    keep = {k: cfg.get(k) for k in ("layout", "now_panel")} if cfg.get("layout_pref") else {}
     for k in SKIN_KEYS:
         if k in DEFAULTS:
             v = DEFAULTS[k]
@@ -8232,6 +8245,7 @@ def apply_skin(win, slug):
         cfg[k] = v
     if cfg.get("theme") not in THEMES:
         cfg["theme"] = "nothing"
+    cfg.update(keep)                                    # the layout you chose stays, whatever the skin says
     cfg["color_overrides"] = dict(m["colors"])
     cfg["skin"] = slug
     cfg["preset"] = ""
@@ -11354,10 +11368,18 @@ class Settings(QWidget):
         skrow.addStretch()
         f.addRow("skin", skrow)
         lay = QComboBox()
-        lay.addItems(["studio", "classic"])
-        lay.setCurrentText(cfg.get("layout", "studio"))
-        lay.currentTextChanged.connect(lambda v: self.set("layout", v, True))
-        f.addRow("layout", lay)
+        for key, label in LAYOUTS:
+            lay.addItem(label.split(" — ")[0], key)
+            lay.setItemData(lay.count() - 1, label, Qt.ToolTipRole)
+        lay.setCurrentIndex(max(0, lay.findData(cfg.get("layout", "studio"))))
+        lay.currentIndexChanged.connect(lambda _i: (cfg.__setitem__("layout_pref", True),
+                                                    self.win.switch_layout(lay.currentData())))
+        lay_note = QLabel(dict(LAYOUTS).get(cfg.get("layout", "studio"), "").split(" — ")[-1], objectName="time")
+        lay.currentIndexChanged.connect(lambda _i: lay_note.setText(dict(LAYOUTS)[lay.currentData()].split(" — ")[-1]))
+        lrow = QHBoxLayout()
+        lrow.addWidget(lay)
+        lrow.addWidget(lay_note, 1)
+        f.addRow("layout", lrow)
         f.addRow("now playing panel", self.check("now_panel", rebuild=False))
         f.addRow("spinning record", self.check("dial_spin", rebuild=False))
         f.addRow("record spin (sec/turn)", self.spin("dial_spin_seconds", 2, 60, rebuild=False))
@@ -11915,6 +11937,8 @@ class Settings(QWidget):
     def apply_preset(self, name):
         cfg = self.win.cfg
         for k, v in PRESETS.get(name, {}).items():
+            if k in ("layout", "now_panel") and cfg.get("layout_pref"):
+                continue
             if isinstance(v, dict) and isinstance(cfg.get(k), dict):
                 cfg[k].update(v)
             else:
@@ -12354,7 +12378,11 @@ class Main(QMainWindow):
 
     # ---------------------------------------------------------- ui
     def build_ui(self):
-        self.studio = self.cfg.get("layout", "studio") == "studio"
+        lay = self.cfg.get("layout", "studio")
+        if lay not in dict(LAYOUTS):
+            lay = self.cfg["layout"] = "studio"
+        self.layout_name = lay
+        self.studio = lay != "classic"                # everything but classic uses the icon nav + cover playlists
         root = AmbientRoot(self)
         self.root = root
         self.setCentralWidget(root)
@@ -12365,12 +12393,16 @@ class Main(QMainWindow):
         self.rail_items = []
         self.build_pages()
         self.now_panel = NowPanel(self)
-        if self.studio:
-            self.build_studio(outer)
-        else:
-            self.build_classic(outer)
+        {"studio": self.build_studio, "classic": self.build_classic, "tabs": self.build_tabs,
+         "focus": self.build_studio, "mini": self.build_mini}[lay](outer)
         self.npbar_w = self.build_npbar()
         outer.addWidget(self.npbar_w)
+        if lay == "mini":
+            self.np_cover.hide()
+            self.np_left.hide()
+            for b in (self.b_lyrics, self.b_vis, self.b_eq, self.b_queue, self.b_panel, self.np_quality):
+                b.hide()
+            self.np_right.setFixedWidth(176)
 
     def set_immersive(self, on):
         """visualizer only: hide the chrome and go full screen."""
@@ -12553,9 +12585,199 @@ class Main(QMainWindow):
         cv = QVBoxLayout(card)
         cv.setContentsMargins(0, 0, 0, 0)
         cv.addWidget(self.stack)
+        if self.layout_name == "focus":
+            body.addWidget(self.now_panel)
+            body.addWidget(card, 1)
+        else:
+            body.addWidget(card, 1)
+            body.addWidget(self.now_panel)
+        outer.addLayout(body, 1)
+
+    def _nav_icon(self, key, kind, tip, size=44):
+        b = IconButton(self, kind, size)
+        b.rail = True
+        b.setToolTip(tip)
+        b.clicked.connect(lambda _=False, k=key: self.go(k))
+        self.nav[key] = b
+        self.icon_buttons.append(b)
+        return b
+
+    NAV_ITEMS = (("albums", "grid", "albums  (ctrl+1)"), ("browse", "columns", "browse  (ctrl+2)"),
+                 ("songs", "list", "songs  (ctrl+3)"), ("queue", "queue", "queue  (ctrl+4)"),
+                 ("discover", "discover", "discover  (ctrl+5)"), ("jam", "jam", "listen together  (ctrl+j)"),
+                 ("download", "download", "download  (ctrl+d)"))
+
+    def build_tabs(self, outer):
+        """everything across the top: brand, navigation, search, settings — the library gets the full width."""
+        outer.setContentsMargins(8, 8, 8, 0)
+        outer.setSpacing(8)
+        top = QWidget(objectName="topbar")
+        top.setAttribute(Qt.WA_StyledBackground, True)
+        self.topbar = top
+        tl = QHBoxLayout(top)
+        tl.setContentsMargins(10, 0, 6, 0)
+        tl.setSpacing(6)
+        self.brand = QLabel(objectName="brand")
+        tl.addWidget(self.brand)
+        tl.addSpacing(10)
+        self.back_btn = IconButton(self, "back", 34)
+        self.back_btn.round = True
+        self.back_btn.clicked.connect(self.back)
+        self.icon_buttons.append(self.back_btn)
+        tl.addWidget(self.back_btn)
+        tl.addSpacing(6)
+        for key, kind, tip in self.NAV_ITEMS:
+            tl.addWidget(self._nav_icon(key, kind, tip, 40))
+        tl.addSpacing(10)
+        tl.addWidget(self.make_search(), 1)
+        self.scan_label = QLabel(objectName="time")
+        tl.addWidget(self.scan_label)
+        self.count_label = QLabel(objectName="time")
+        tl.addWidget(self.count_label)
+        refresh = IconButton(self, "refresh", 36)
+        refresh.round = True
+        refresh.setToolTip("rescan library")
+        refresh.clicked.connect(self.rescan)
+        self.icon_buttons.append(refresh)
+        tl.addWidget(refresh)
+        gear = IconButton(self, "gear", 40)
+        gear.round = True
+        gear.setToolTip("settings  (ctrl+,)")
+        gear.clicked.connect(self.open_settings)
+        self.icon_buttons.append(gear)
+        tl.addWidget(gear)
+        outer.addWidget(top)
+        # playlists as a strip of covers under the bar
+        strip = QWidget(objectName="rail")
+        strip.setAttribute(Qt.WA_StyledBackground, True)
+        strip.setFixedHeight(60)
+        self.sidebar = strip
+        sl = QHBoxLayout(strip)
+        sl.setContentsMargins(12, 8, 12, 8)
+        sl.setSpacing(8)
+        plus = IconButton(self, "plus", 44)
+        plus.rail = True
+        plus.setToolTip("new playlist")
+        plus.clicked.connect(lambda: self.playlist_new([]))
+        self.icon_buttons.append(plus)
+        sl.addWidget(plus)
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sa.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inner = QWidget()
+        self.rail_pl = QHBoxLayout(inner)
+        self.rail_pl.setContentsMargins(0, 0, 0, 0)
+        self.rail_pl.setSpacing(8)
+        self.rail_pl.addStretch()
+        sa.setWidget(inner)
+        sl.addWidget(sa, 1)
+        outer.addWidget(strip)
+        body = QHBoxLayout()
+        body.setSpacing(8)
+        card = QWidget(objectName="card")
+        card.setAttribute(Qt.WA_StyledBackground, True)
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.addWidget(self.stack)
         body.addWidget(card, 1)
         body.addWidget(self.now_panel)
         outer.addLayout(body, 1)
+
+    def build_mini(self, outer):
+        """a small player: the record, the song, the controls. the library is one click away (full)."""
+        outer.setContentsMargins(8, 8, 8, 0)
+        outer.setSpacing(6)
+        top = QWidget(objectName="topbar")
+        top.setAttribute(Qt.WA_StyledBackground, True)
+        self.topbar = top
+        tl = QHBoxLayout(top)
+        tl.setContentsMargins(10, 4, 6, 4)
+        tl.setSpacing(8)
+        self.brand = QLabel(objectName="brand")
+        tl.addWidget(self.brand)
+        tl.addStretch()
+        self.scan_label = QLabel(objectName="time")
+        tl.addWidget(self.scan_label)
+        self.pin_btn = self.tbtn("pin on top", self.toggle_pin, "pill")
+        self.pin_btn.setToolTip("keep the mini player above other windows")
+        tl.addWidget(self.pin_btn)
+        tl.addWidget(self.tbtn("full", self.leave_mini, "pillPrimary"))
+        outer.addWidget(top)
+        # the library still exists (so everything keeps working), it just isn't shown
+        hidden = QWidget(self.root)
+        hidden.hide()
+        hl = QVBoxLayout(hidden)
+        self.back_btn = IconButton(self, "back", 30)
+        self.back_btn.clicked.connect(self.back)
+        hl.addWidget(self.back_btn)
+        hl.addWidget(self.make_search())
+        self.count_label = QLabel()
+        hl.addWidget(self.count_label)
+        inner = QWidget()
+        self.rail_pl = QVBoxLayout(inner)
+        self.rail_pl.addStretch()
+        hl.addWidget(inner)
+        hl.addWidget(self.stack)
+        self._mini_hidden = hidden
+        self.sidebar = None
+        body = QHBoxLayout()
+        body.addStretch()
+        body.addWidget(self.now_panel)
+        body.addStretch()
+        outer.addLayout(body, 1)
+
+    # ---- switching layouts (and the mini player's window size)
+    def switch_layout(self, name):
+        old = self.cfg.get("layout", "studio")
+        if name == old:
+            return
+        if name == "mini":
+            self.cfg["layout_before_mini"] = old
+            if not (self.isMaximized() or self.isFullScreen()):
+                self.cfg["size_before_mini"] = [self.width(), self.height()]
+            if self.isMaximized() or self.isFullScreen():
+                self.showNormal()
+        self.cfg["layout"] = name
+        self.cfg.save()
+        QTimer.singleShot(0, self._after_layout_switch)
+
+    def _after_layout_switch(self):
+        mini = self.cfg.get("layout") == "mini"
+        self.rebuild_ui()
+        size = None
+        if mini:
+            size = (480, 780)
+        elif self.cfg.get("size_before_mini"):
+            w, h = self.cfg.pop("size_before_mini")
+            size = (max(900, int(w)), max(600, int(h)))
+            self.cfg.save()
+        if size:                                    # after the old layout is really gone, or its size still counts
+            QTimer.singleShot(50, lambda: self.resize(*size))
+        if not mini and self.windowFlags() & Qt.WindowStaysOnTopHint:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+            self.show()
+
+    def toggle_mini(self):
+        if self.cfg.get("layout") == "mini":
+            self.leave_mini()
+        else:
+            self.switch_layout("mini")
+
+    def leave_mini(self):
+        back = self.cfg.get("layout_before_mini") or "studio"
+        self.switch_layout(back if back != "mini" else "studio")
+
+    def toggle_pin(self):
+        on = not bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        self.show()
+        try:
+            self.pin_btn._raw = "unpin" if on else "pin on top"
+            self.pin_btn.setText(self.B(self.pin_btn._raw))
+        except (RuntimeError, AttributeError):
+            pass
 
     def build_classic(self, outer):
         body = QHBoxLayout()
@@ -12647,6 +12869,7 @@ class Main(QMainWindow):
         self.np_cover.clicked.connect(self.goto_playing_album)
         h.addWidget(self.np_cover)
         left = QWidget()
+        self.np_left = left
         left.setFixedWidth(270)
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
@@ -12704,6 +12927,7 @@ class Main(QMainWindow):
         h.addLayout(center, 1)
 
         right = QWidget()
+        self.np_right = right
         right.setFixedWidth(420)
         rl = QHBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -12781,6 +13005,7 @@ class Main(QMainWindow):
         sc("Ctrl+E", self.open_eq)
         sc("Ctrl+L", self.toggle_lyrics)
         sc("Ctrl+D", lambda: self.go("download"))
+        sc("Ctrl+M", self.toggle_mini)
         sc("Ctrl+I", self.inspect_current)
         sc(Qt.Key_MediaTogglePlayPause, self.toggle_play)
         sc(Qt.Key_MediaPlay, self.toggle_play)
@@ -12805,7 +13030,7 @@ class Main(QMainWindow):
         self.covers.clear()
         if not self.studio:
             self.sidebar.setFixedWidth(int(cfg["sidebar_width"]))
-        self.now_panel.setVisible(bool(cfg.get("now_panel", True)))
+        self.now_panel.setVisible(bool(cfg.get("now_panel", True)) or cfg.get("layout") in ("focus", "mini"))
         self.now_panel.relayout()
         self.brand.setText(cfg.get("header_text") or APP)
         if not self.studio:
@@ -12843,6 +13068,10 @@ class Main(QMainWindow):
             self.np_cover.setPixmap(self.covers.get("", 56))
 
     def open_settings(self):
+        if self.cfg.get("layout") == "mini":            # settings need room: back to the full window first
+            self.leave_mini()
+            QTimer.singleShot(60, lambda: self.go("settings"))
+            return
         if self.page == "settings":
             self.back()
         else:
