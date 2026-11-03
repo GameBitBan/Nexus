@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.17.1"
+VERSION = "1.18.0"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 DISCORD_APP_ID = "1566983013445931018"  # Nexus's own discord app: lets anyone show what they're playing without making one
 
@@ -249,6 +249,8 @@ DEFAULTS = {
     "slsk_upload_slots": 2,
     "slsk_download_dir": "",           # temp landing spot before import (default: inside Nexus's data folder)
     "dl_lossless_only": True,
+    "dl_source": "soulseek",           # soulseek | archive | jamendo
+    "jamendo_client_id": "",           # your own jamendo app id (optional — nexus has one built in)
     "jam_allow_download": "ask",       # jam listeners asking for a song/album: ask | yes | no
     "dl_auto_switch": True,            # a download that hasn't started after a while moves to another user
     "dl_stall_minutes": 5,
@@ -4087,6 +4089,308 @@ class SoulseekNative:
         return self.call(go)
 
 
+# ------------------------------------------------------------------ free & legal sources: internet archive, jamendo
+JAMENDO_CLIENT_ID = ""      # nexus's jamendo app id (free, devportal.jamendo.com); users can set their own
+WEB_HOSTS = {"archive": ("archive.org",), "jamendo": ("jamendo.com",)}
+
+
+def _host_ok(url, source):
+    from urllib.parse import urlsplit
+    u = urlsplit(url)
+    h = (u.hostname or "").lower()
+    return u.scheme == "https" and any(h == d or h.endswith("." + d) for d in WEB_HOSTS[source])
+
+
+def _web_json(url, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": f"Nexus/{VERSION} (+https://github.com/GameBitBan/Nexus)"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read(30_000_000).decode("utf-8"))
+
+
+class WebMusic:
+    """search + file lists for the Internet Archive (incl. the Live Music Archive) and Jamendo. → plain dicts:
+    row = {source, id, name, artist, year, fmt, tracks, size, info, page, cover, files: [..] | None}
+    file = {url, name, size, md5, title, track}"""
+    AUDIO_FORMATS = (("24bit Flac", "FLAC 24-bit"), ("Flac", "FLAC"), ("Apple Lossless Audio", "ALAC"),
+                     ("VBR MP3", "MP3 VBR"), ("320Kbps MP3", "MP3 320k"), ("Ogg Vorbis", "OGG"), ("MP3", "MP3"))
+
+    def __init__(self, win):
+        self.win = win
+
+    def jamendo_id(self):
+        return (self.win.cfg.get("jamendo_client_id") or "").strip() or JAMENDO_CLIENT_ID
+
+    # ---- internet archive
+    def archive_search(self, text, lossless):
+        from urllib.parse import urlencode
+        words = re.sub(r"[^\w\s'-]+", " ", text).strip()
+        if not words:
+            return []
+        fmt = '(Flac OR "24bit Flac" OR "Apple Lossless Audio")' if lossless else \
+            '(Flac OR "24bit Flac" OR "VBR MP3" OR MP3 OR "Ogg Vorbis")'
+        q = f"({words}) AND mediatype:audio AND format:{fmt} AND -collection:librivoxaudio AND -collection:podcasts"
+        params = [("q", q), ("rows", "60"), ("output", "json"), ("sort[]", "downloads desc"),
+                  ("fl", "identifier,title,creator,year,date,item_size,downloads,collection,licenseurl")]
+        d = _web_json("https://archive.org/advancedsearch.php?" + urlencode(params))
+        rows = []
+        for x in (d.get("response") or {}).get("docs", []):
+            ident = str(x.get("identifier") or "")
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", ident):
+                continue
+
+            def one(v):
+                return ", ".join(map(str, v)) if isinstance(v, list) else str(v or "")
+            coll = x.get("collection") or []
+            live = "etree" in (coll if isinstance(coll, list) else [coll])
+            year = one(x.get("year")) or one(x.get("date"))[:4]
+            rows.append({"source": "archive", "id": ident, "name": one(x.get("title")) or ident,
+                         "artist": one(x.get("creator")), "year": year, "fmt": "FLAC" if lossless else "",
+                         "tracks": None, "size": int(x.get("item_size") or 0),
+                         "info": ("live music archive" if live else "internet archive") + (f" · {year}" if year else ""),
+                         "license": one(x.get("licenseurl")),
+                         "page": f"https://archive.org/details/{ident}",
+                         "cover": f"https://archive.org/services/img/{ident}", "files": None})
+        return rows
+
+    def archive_files(self, row, lossless):
+        from urllib.parse import quote
+        d = _web_json(f"https://archive.org/metadata/{row['id']}")
+        files = [f for f in d.get("files", []) if isinstance(f, dict) and str(f.get("private", "")).lower() != "true"]
+        by_fmt = {}
+        for f in files:
+            by_fmt.setdefault(str(f.get("format") or ""), []).append(f)
+        pick = None
+        for key, label in self.AUDIO_FORMATS:
+            if key in by_fmt and (not lossless or "FLAC" in label or "ALAC" in label):
+                pick = (key, label)
+                break
+        if not pick:
+            return [], ""
+        out = []
+        for f in by_fmt[pick[0]]:
+            name = str(f.get("name") or "")
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in AUDIO_EXT or ".." in name.replace("\\", "/").split("/"):
+                continue
+            out.append({"url": f"https://archive.org/download/{quote(row['id'])}/{quote(name)}",
+                        "name": os.path.basename(name), "size": int(f.get("size") or 0),
+                        "md5": str(f.get("md5") or ""), "title": str(f.get("title") or ""),
+                        "track": str(f.get("track") or "")})
+
+        def order(f):
+            m = re.match(r"\d+", f["track"] or "")
+            return (int(m.group()) if m else 9999, f["name"].lower())
+        out.sort(key=order)
+        meta = d.get("metadata") or {}
+        if meta.get("creator") and not row.get("artist"):
+            row["artist"] = meta["creator"] if isinstance(meta["creator"], str) else ", ".join(meta["creator"])
+        return out, pick[1]
+
+    # ---- jamendo
+    def jamendo_search(self, text, lossless):
+        from urllib.parse import urlencode
+        cid = self.jamendo_id()
+        if not cid:
+            raise RuntimeError("Jamendo needs a free app id — settings → downloads → Jamendo")
+        d = _web_json("https://api.jamendo.com/v3.0/tracks/?" + urlencode({
+            "client_id": cid, "format": "json", "limit": "200", "search": text, "groupby": "album_id",
+            "include": "licenses", "audiodlformat": "flac" if lossless else "mp32", "order": "relevance",
+            "imagesize": "600"}))
+        self._check_jamendo(d)
+        rows, seen = [], set()
+        for t in d.get("results", []):
+            aid = str(t.get("album_id") or "")
+            if not aid or aid in seen or not t.get("audiodownload_allowed", True):
+                continue
+            seen.add(aid)
+            rows.append({"source": "jamendo", "id": aid, "name": t.get("album_name") or t.get("name") or "",
+                         "artist": t.get("artist_name") or "", "year": str(t.get("releasedate") or "")[:4],
+                         "fmt": "FLAC" if lossless else "MP3", "tracks": None, "size": 0,
+                         "info": "jamendo · creative commons", "license": t.get("license_ccurl") or "",
+                         "page": f"https://www.jamendo.com/album/{aid}",
+                         "cover": t.get("album_image") or t.get("image") or "", "files": None})
+        return rows
+
+    def jamendo_files(self, row, lossless):
+        from urllib.parse import urlencode
+        d = _web_json("https://api.jamendo.com/v3.0/albums/tracks/?" + urlencode({
+            "client_id": self.jamendo_id(), "format": "json", "id": row["id"],
+            "audiodlformat": "flac" if lossless else "mp32", "imagesize": "600"}))
+        self._check_jamendo(d)
+        ext = ".flac" if lossless else ".mp3"
+        out = []
+        alb = (d.get("results") or [{}])[0]
+        if alb.get("image") and _host_ok(alb["image"], "jamendo"):
+            row["cover"] = alb["image"]
+        for t in sorted(alb.get("tracks") or [], key=lambda t: int(t.get("position") or 0)):
+            url = t.get("audiodownload") or ""
+            if not url or not t.get("audiodownload_allowed", True) or not _host_ok(url, "jamendo"):
+                continue
+            pos = int(t.get("position") or 0)
+            out.append({"url": url, "name": safe_name(f"{pos:02d} {t.get('name') or 'track'}", "track") + ext,
+                        "size": 0, "md5": "", "title": t.get("name") or "", "track": str(pos)})
+        return out, "FLAC" if lossless else "MP3"
+
+    @staticmethod
+    def _check_jamendo(d):
+        h = d.get("headers") or {}
+        if h.get("status") not in (None, "success"):
+            raise RuntimeError(f"Jamendo: {h.get('error_message') or h.get('status')}")
+
+    # ---- dispatch
+    def search(self, source, text, lossless):
+        return self.archive_search(text, lossless) if source == "archive" else self.jamendo_search(text, lossless)
+
+    def files(self, row, lossless):
+        return self.archive_files(row, lossless) if row["source"] == "archive" else self.jamendo_files(row, lossless)
+
+
+class WebDownloads(QObject):
+    """downloads web albums one file at a time on a worker thread, checks them, then imports them."""
+    changed = Signal()
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.jobs = OrderedDict()            # id → job
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+        self.thread = None
+
+    def add(self, row, files, fmt):
+        jid = uuid.uuid4().hex[:10]
+        job = {"id": jid, "row": row, "files": files, "fmt": fmt, "done": 0, "got": 0,
+               "total": sum(f["size"] for f in files), "state": "waiting", "cancel": False, "paths": []}
+        with self.lock:
+            self.jobs[jid] = job
+        if self.thread is None or not self.thread.is_alive():
+            self.thread = threading.Thread(target=self._run, daemon=True, name="webdl")
+            self.thread.start()
+        self.wake.set()
+        self.changed.emit()
+        return jid
+
+    def cancel(self, jid):
+        j = self.jobs.get(jid)
+        if j:
+            j["cancel"] = True
+            if j["state"] in ("waiting",):
+                j["state"] = "cancelled"
+            self.changed.emit()
+
+    def retry(self, jid):
+        j = self.jobs.get(jid)
+        if j and j["state"].startswith(("failed", "cancelled", "some")):
+            j.update(state="waiting", cancel=False, done=0, got=0, paths=[])
+            self.wake.set()
+            if self.thread is None or not self.thread.is_alive():
+                self.thread = threading.Thread(target=self._run, daemon=True, name="webdl")
+                self.thread.start()
+            self.changed.emit()
+
+    def clear_finished(self):
+        with self.lock:
+            for k in [k for k, j in self.jobs.items() if j["state"] in ("in your library", "cancelled")
+                      or j["state"].startswith("failed")]:
+                self.jobs.pop(k, None)
+        self.changed.emit()
+
+    def active(self):
+        return any(j["state"] in ("waiting", "downloading") for j in self.jobs.values())
+
+    def _next(self):
+        with self.lock:
+            return next((j for j in self.jobs.values() if j["state"] == "waiting" and not j["cancel"]), None)
+
+    def _run(self):
+        import hashlib as _h
+        while True:
+            job = self._next()
+            if job is None:
+                self.wake.clear()
+                if not self.wake.wait(30):
+                    return
+                continue
+            row, src = job["row"], job["row"]["source"]
+            folder = self.win.dir / "web-downloads" / job["id"]
+            folder.mkdir(parents=True, exist_ok=True)
+            job["state"], last = "downloading", 0.0
+            failed = 0
+            for f in job["files"]:
+                if job["cancel"]:
+                    break
+                if not _host_ok(f["url"], src) or os.path.splitext(f["name"])[1].lower() not in AUDIO_EXT:
+                    failed += 1
+                    continue
+                dest = folder / safe_name(f["name"], "track.flac")
+                part = dest.with_name(dest.name + ".part")
+                md5 = _h.md5(usedforsecurity=False)
+                try:
+                    req = urllib.request.Request(f["url"], headers={"User-Agent": f"Nexus/{VERSION}"})
+                    with urllib.request.urlopen(req, timeout=60) as r, open(part, "wb") as out:
+                        if not _host_ok(r.geturl(), src) and not _host_ok_redirect(r.geturl()):
+                            raise ValueError("redirected somewhere unexpected")
+                        n = 0
+                        while not job["cancel"]:
+                            b = r.read(256 * 1024)
+                            if not b:
+                                break
+                            n += len(b)
+                            if n > 3_000_000_000:
+                                raise ValueError("file is far too big")
+                            out.write(b)
+                            md5.update(b)
+                            job["got"] += len(b)
+                            if _time.monotonic() - last > 0.5:
+                                last = _time.monotonic()
+                                self.changed.emit()
+                    if job["cancel"]:
+                        part.unlink(missing_ok=True)
+                        break
+                    if f["md5"] and md5.hexdigest() != f["md5"].lower():
+                        part.unlink(missing_ok=True)
+                        raise ValueError("checksum mismatch")
+                    os.replace(part, dest)
+                    job["paths"].append(str(dest))
+                    job["done"] += 1
+                except Exception as e:
+                    failed += 1
+                    job["error"] = f"{type(e).__name__}: {e}"[:160]
+                    part.unlink(missing_ok=True)
+                self.changed.emit()
+            if job["cancel"]:
+                job["state"] = "cancelled"
+                shutil.rmtree(folder, ignore_errors=True)
+                self.changed.emit()
+                continue
+            if job["paths"] and row.get("cover"):           # cover art next to the files, so it gets imported too
+                try:
+                    if _host_ok(row["cover"], src):
+                        data = fetch_bytes(row["cover"], 12_000_000)
+                        if data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n":
+                            (folder / ("cover.png" if data[:4] == b"\x89PNG" else "cover.jpg")).write_bytes(data)
+                except Exception:
+                    pass
+            job["state"] = "importing" if job["paths"] else f"failed ({job.get('error', 'nothing downloaded')})"
+            self.changed.emit()
+            if job["paths"]:
+                self.win.ui_call.run.emit(lambda j=job, fl=folder, fc=failed: self._import(j, fl, fc))
+
+    def _import(self, job, folder, failed):
+        done = self.win.importer.import_files(job["paths"], move=True)
+        shutil.rmtree(folder, ignore_errors=True)
+        job["state"] = "in your library" if done and not failed else \
+            (f"some failed — {len(done)}/{len(job['files'])} in your library" if done else "failed (couldn't import)")
+        self.changed.emit()
+        if done:
+            self.win.toast(f"“{job['row']['name']}” is in your library ({len(done)} songs)")
+
+
+def _host_ok_redirect(url):
+    """archive.org serves files from its own data centres (iaNNN.us.archive.org) — still archive.org."""
+    return _host_ok(url, "archive") or _host_ok(url, "jamendo")
+
+
 class DownloadPage(QWidget):
     """search soulseek, queue albums, watch them land in the library."""
 
@@ -4113,6 +4417,20 @@ class DownloadPage(QWidget):
         v.addLayout(head)
         sr = QHBoxLayout()
         sr.setSpacing(10)
+        self.web = WebMusic(win)
+        self.webdl = WebDownloads(win)
+        self.webdl.changed.connect(self.render_downloads_soon)
+        self.web_rows = []
+        self.src = QComboBox()
+        for key, label in (("soulseek", "Soulseek"), ("archive", "Internet Archive"), ("jamendo", "Jamendo")):
+            self.src.addItem(label, key)
+        self.src.setToolTip("Soulseek: other people's shared music (peer to peer)\n"
+                            "Internet Archive: free, legal — public-domain recordings, netlabels and the Live Music "
+                            "Archive (thousands of concerts in FLAC from bands that allow taping)\n"
+                            "Jamendo: free, legal Creative Commons music from independent artists")
+        self.src.setCurrentIndex(max(0, self.src.findData(win.cfg.get("dl_source", "soulseek"))))
+        self.src.currentIndexChanged.connect(self.source_changed)
+        sr.addWidget(self.src)
         self.q = QLineEdit(objectName="search")
         self.q.setPlaceholderText(win.L("Search Soulseek — artist, album or song"))
         self.q.setMaximumWidth(620)
@@ -4135,6 +4453,7 @@ class DownloadPage(QWidget):
         self.tree.setIndentation(18)
         self.tree.setAllColumnsShowFocus(True)
         self.tree.itemDoubleClicked.connect(self.item_activated)
+        self.tree.itemExpanded.connect(self.item_expanded)
         hh = self.tree.header()
         hh.setStretchLastSection(False)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -4167,7 +4486,12 @@ class DownloadPage(QWidget):
         self.timer = QTimer(self)
         self.timer.setInterval(2000)
         self.timer.timeout.connect(self.poll)
+        self.web_timer = QTimer(self)
+        self.web_timer.setSingleShot(True)
+        self.web_timer.setInterval(300)
+        self.web_timer.timeout.connect(self.render_downloads)
         self.refresh_conn()
+        self.source_changed()
 
     # ---- unfinished downloads survive restarts / updates
     def pending_file(self):
@@ -4228,11 +4552,138 @@ class DownloadPage(QWidget):
     def lossless_toggled(self, on):
         self.win.cfg["dl_lossless_only"] = on
         self.win.cfg.save()
+        if self.source() != "soulseek":
+            if self.q.text().strip():
+                self.search()
+            return
         if getattr(self, "raw", None) is not None:
             self.show_rows(group_results(self.raw, on))
 
+    # ---- sources
+    def source(self):
+        return self.src.currentData() or "soulseek"
+
+    def source_changed(self, *_a):
+        src = self.source()
+        self.win.cfg["dl_source"] = src
+        self.win.cfg.save()
+        L = self.win.L
+        self.q.setPlaceholderText(L({"soulseek": "Search Soulseek — artist, album or song",
+                                     "archive": "Search the Internet Archive — artist, album, or a band + year for "
+                                                "live shows",
+                                     "jamendo": "Search Jamendo — artist, album, genre"}[src]))
+        self.tree.setHeaderLabels(["", "ALBUM / FOLDER", "FORMAT", "TRACKS", "SIZE", "USER", "SPEED", ""]
+                                  if src == "soulseek" else ["", "ALBUM", "FORMAT", "TRACKS", "SIZE", "WHERE", "YEAR", ""])
+        self.conn.setVisible(src == "soulseek")
+        self.tree.clear()
+        self.status.setText(L({"soulseek": "",
+                               "archive": "free and legal: public-domain recordings, netlabels and the Live Music "
+                                          "Archive. double-click a result to see its tracks.",
+                               "jamendo": "free and legal Creative Commons music from independent artists. "
+                                          "check each album's licence before using it in videos."}[src]))
+
+    def web_search(self, text):
+        src, lossless = self.source(), self.lossless.isChecked()
+        if src == "jamendo" and not self.web.jamendo_id():
+            self.status.setText(self.win.L("Jamendo needs a free app id: devportal.jamendo.com → create an app → "
+                                           "paste its client id in settings → downloads"))
+            return
+        self.busy = True
+        self.status.setText(self.win.L(f"searching {self.src.currentText()}…"))
+
+        def done(rows, err):
+            self.busy = False
+            if err:
+                self.status.setText(self.win.L(f"couldn't search {self.src.currentText()}: {err}"[:200]))
+                return
+            self.show_web_rows(rows or [])
+        self.win.bg(lambda: self.web.search(src, text, lossless), done)
+
+    def show_web_rows(self, rows):
+        from PySide6.QtWidgets import QTreeWidgetItem
+        self.web_rows = rows[:80]
+        self.rows = []
+        self.tree.clear()
+        n = len(self.web_rows)
+        self.status.setText(self.win.L(f"{n} found" + (" (lossless)" if self.lossless.isChecked() else "")
+                                       + ("" if n else " — try fewer words, or untick lossless only")))
+        for i, r in enumerate(self.web_rows):
+            where = (r["artist"] + " · " if r["artist"] else "") + r["info"]
+            it = QTreeWidgetItem(["", r["name"], r["fmt"], "…", human_size(r["size"]) if r["size"] else "—",
+                                  where, r["year"], ""])
+            it.setData(0, Qt.UserRole, ("web", i))
+            it.setToolTip(1, r["page"] + (f"\nlicence: {r['license']}" if r.get("license") else ""))
+            it.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+            self.tree.addTopLevelItem(it)
+            b = self.win.tbtn("download", lambda i=i: self.web_download(i), "rowpill")
+            b.setFixedHeight(26)
+            self.tree.setItemWidget(it, 7, b)
+
+    def web_files(self, i, then):
+        r = self.web_rows[i]
+        if r.get("files") is not None:
+            then(r)
+            return
+        lossless = self.lossless.isChecked()
+
+        def done(res, err):
+            if err:
+                self.status.setText(self.win.L(f"couldn't open “{r['name']}”: {err}"[:200]))
+                return
+            r["files"], fmt = res
+            if fmt:
+                r["fmt"] = fmt
+            if not r["files"]:
+                self.status.setText(self.win.L(f"“{r['name']}” has no downloadable " +
+                                               ("lossless " if lossless else "") + "audio"))
+            then(r)
+        self.win.bg(lambda: self.web.files(r, lossless), done)
+
+    def item_expanded(self, it):
+        d = it.data(0, Qt.UserRole)
+        if not (isinstance(d, tuple) and d[0] == "web") or it.childCount():
+            return
+        i = d[1]
+
+        def fill(r):
+            from PySide6.QtWidgets import QTreeWidgetItem
+            try:
+                it.setText(2, r["fmt"])
+                it.setText(3, str(len(r["files"])))
+                size = sum(f["size"] for f in r["files"])
+                if size:
+                    it.setText(4, human_size(size))
+                for f in r["files"]:
+                    ch = QTreeWidgetItem(["", f["title"] or f["name"], "", f["track"],
+                                          human_size(f["size"]) if f["size"] else "", "", "", ""])
+                    ch.setData(0, Qt.UserRole, ("webfile", i, f["url"]))
+                    it.addChild(ch)
+            except RuntimeError:
+                pass                                  # results were replaced meanwhile
+        self.web_files(i, fill)
+
+    def web_download(self, i, only=None):
+        def go(r):
+            files = [f for f in r["files"] if only is None or f["url"] == only]
+            if not files:
+                return
+            name = r["name"] + (f" — {files[0]['title'] or files[0]['name']}" if only else "")
+            row = dict(r, name=name)
+            self.webdl.add(row, files, r["fmt"])
+            self.win.toast(f"downloading “{name}” from {self.src.currentText()} — it lands in your library when done")
+        self.web_files(i, go)
+
+    def render_downloads_soon(self):
+        if not self.web_timer.isActive():
+            self.web_timer.start()
+
     # ---- search
     def search(self, text=None, fallbacks=None, original=None):
+        if self.source() != "soulseek":
+            text = (self.q.text() if text is None else text).strip()
+            if text and not self.busy:
+                self.web_search(text)
+            return
         text = clean_query(self.q.text() if text is None else text)
         if not text or self.busy:
             return
@@ -4312,6 +4763,11 @@ class DownloadPage(QWidget):
 
     def item_activated(self, it, _col):
         d = it.data(0, Qt.UserRole)
+        if isinstance(d, tuple) and d and d[0] == "web":
+            return                                     # double-click expands web results (see their tracks)
+        if isinstance(d, tuple) and d and d[0] == "webfile":
+            self.web_download(d[1], only=d[2])
+            return
         if isinstance(d, int):
             self.download(self.rows[d])
         elif isinstance(d, tuple):
@@ -4502,6 +4958,19 @@ class DownloadPage(QWidget):
                 it = QListWidgetItem(f"{bar}   {name}  ·  {u.get('username')}  ·  {ok}/{len(fs)}  ·  {state}")
                 it.setData(Qt.UserRole, key)
                 self.dl.addItem(it)
+        for j in list(getattr(self, "webdl", None).jobs.values()) if getattr(self, "webdl", None) else []:
+            total = j["total"] or 0
+            n = len(j["files"]) or 1
+            frac = (j["got"] / total) if total else (j["done"] / n)
+            if j["state"] in ("in your library", "importing"):
+                frac = 1.0
+            filled = int(24 * min(1.0, frac))
+            bar = "●" * filled + "·" * (24 - filled)
+            src = {"archive": "internet archive", "jamendo": "jamendo"}[j["row"]["source"]]
+            state = f"{int(frac * 100)}%" if j["state"] == "downloading" else j["state"]
+            it = QListWidgetItem(f"{bar}   {j['row']['name']}  ·  {src}  ·  {j['done']}/{n}  ·  {state}")
+            it.setData(Qt.UserRole, "web:" + j["id"])
+            self.dl.addItem(it)
 
     def import_finished(self):
         done = [(u.get("username"), f) for u in self.transfers for d in u.get("directories", [])
@@ -4692,6 +5161,17 @@ class DownloadPage(QWidget):
             return
         L = self.win.L
         m = QMenu(self)
+        if str(key).startswith("web:"):
+            jid = key[4:]
+            j = self.webdl.jobs.get(jid) or {}
+            m.addAction(L("cancel"), lambda: self.webdl.cancel(jid))
+            m.addAction(L("retry"), lambda: self.webdl.retry(jid))
+            if j.get("row", {}).get("page"):
+                m.addAction(L("open its page"), lambda: QDesktopServices.openUrl(QUrl(j["row"]["page"])))
+            if j.get("error"):
+                m.addAction(L(f"last error: {j['error']}"[:90])).setEnabled(False)
+            m.exec(self.dl.viewport().mapToGlobal(pos))
+            return
         m.addAction(L("try another user"), lambda: self.switch_source(key))
         m.addAction(L("retry failed files"), lambda: self.retry_failed(key))
         m.addAction(L("cancel"), lambda: self.cancel_folder(key))
@@ -4725,6 +5205,7 @@ class DownloadPage(QWidget):
         self.win.bg(lambda: firewall_fix(port, wait=True), done)
 
     def clear_finished(self):
+        self.webdl.clear_finished()
         c = self.client()
 
         def work():
@@ -11115,6 +11596,16 @@ class Settings(QWidget):
         fd.addRow(wexp)
         fd.addRow("folder", self.folder_row("watch_folder", str(Path.home() / "Downloads")))
         fd.addRow("watch it", self.check("watch_enabled", rebuild=False))
+        fd.addRow(QLabel(""))
+        fd.addRow(QLabel("FREE & LEGAL SOURCES", objectName="eyebrow"))
+        fexp = QLabel("The Download page can also search the Internet Archive (public-domain recordings, netlabels and "
+                      "the Live Music Archive's concerts in FLAC) and Jamendo (Creative Commons music) — pick them "
+                      "next to the search box. No account needed for either.", objectName="dim")
+        fexp.setWordWrap(True)
+        fd.addRow(fexp)
+        jid = self.line("jamendo_client_id")
+        jid.setPlaceholderText("built in" if JAMENDO_CLIENT_ID else "free from devportal.jamendo.com")
+        fd.addRow("own Jamendo client id (optional)" if JAMENDO_CLIENT_ID else "Jamendo client id", jid)
         tabs.addTab(self.scroll(dlw), "downloads")
 
         # ---- discord
@@ -12396,6 +12887,8 @@ class Main(QMainWindow):
     def search_soulseek(self, query):
         self.go("download")
         dp = self.download_page
+        if dp.source() != "soulseek":
+            dp.src.setCurrentIndex(dp.src.findData("soulseek"))
         dp.q.setText(query)
         dp.search()
 

@@ -75,6 +75,12 @@ Audio goes straight between your PCs (WebRTC, encrypted, Opus at 320 kbps — ne
 
 All of it is in settings → look → *background & visualizer* (style, colour, sensitivity, glow on/off + strength, record ring on/off). The visualizer reads what the Nexus audio engine is actually playing, after the EQ; with the basic Qt player it has nothing to show.
 
+## free & legal sources (Internet Archive, Jamendo)
+
+On the Download page, the picker next to the search box switches between **Soulseek**, **Internet Archive** and **Jamendo**. Results work the same way: expand one to see its tracks, **download** gets the whole album (or double-click a single track), and it lands in your library sorted into Artist / Album with its cover.
+- **Internet Archive**: public-domain recordings, netlabels, old 78s, and the **Live Music Archive** — thousands of concerts in FLAC (often 24-bit) from bands that allow taping. Try a band name plus a year. No account or key needed. Every file is checked against the Archive's own checksum.
+- **Jamendo**: Creative Commons music from independent artists, in FLAC or MP3 where the artist allows downloads. Each album's licence is in its tooltip — check it before using a song in a video.
+
 ## downloading (Soulseek)
 
 The download icon in the rail (`ctrl+d`) searches **Soulseek**. Nexus connects to the network itself, and finished files land straight on this PC and get imported. Results are grouped by album folder and ranked best-first: lossless before lossy, 24-bit first, free upload slot, fast peers. Hit **Download** on a row (or double-click it, or one track). Progress shows at the bottom.
