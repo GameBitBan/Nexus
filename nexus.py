@@ -68,8 +68,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.14.1"
+VERSION = "1.15.0"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
+DISCORD_APP_ID = ""         # Nexus's own discord app: lets anyone show what they're playing without making one
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
              ".dsf", ".opus", ".ogg", ".oga", ".mp3", ".mp4", ".aac"}
@@ -142,7 +143,7 @@ COLS = OrderedDict([("#", "#"), ("title", "title"), ("artist", "artist"),
                     ("album", "album"), ("year", "year"), ("genre", "genre"),
                     ("duration", "time"), ("format", "format")])
 
-PAGES = ("jam", "discover", "tags", "visualizer", "albums", "artists", "songs", "queue", "album", "playlist", "browse", "settings", "eq", "lyrics", "download",
+PAGES = ("import", "jam", "discover", "tags", "visualizer", "albums", "artists", "songs", "queue", "album", "playlist", "browse", "settings", "eq", "lyrics", "download",
          "inspect")
 
 DEFAULTS = {
@@ -214,6 +215,7 @@ DEFAULTS = {
     "slsk_upload_slots": 2,
     "slsk_download_dir": "",           # temp landing spot before import (default: inside Nexus's data folder)
     "dl_lossless_only": True,
+    "jam_allow_download": "ask",       # jam listeners asking for a song/album: ask | yes | no
     "dl_auto_switch": True,            # a download that hasn't started after a while moves to another user
     "dl_stall_minutes": 5,
     "ambient_background": True,        # blurred album-art glow behind the ui
@@ -301,6 +303,13 @@ def fmt_time(sec):
     h, r = divmod(sec, 3600)
     m, s = divmod(r, 60)
     return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
+
+
+LOSSY_FMTS = {"MP3", "AAC", "OPUS", "OGG"}
+
+
+def is_lossy(t):
+    return bool(t) and t.get("fmt") in LOSSY_FMTS
 
 
 def quality(t):
@@ -1190,6 +1199,8 @@ class SongModel(QAbstractTableModel):
         if role == Qt.ForegroundRole and not self.plain:
             if self.playing(index.row()):
                 return QColor(self.win.c["accent"])
+            if c == "format" and is_lossy(t):
+                return QColor(self.win.cfg.get("lossy_color") or "#e0a040")
             if c in ("#", "duration", "format", "year", "genre"):
                 return QColor(self.win.c["dim"])
         if role == Qt.TextAlignmentRole:
@@ -1197,7 +1208,8 @@ class SongModel(QAbstractTableModel):
                 return int(Qt.AlignRight | Qt.AlignVCenter)
             return int(Qt.AlignLeft | Qt.AlignVCenter)
         if role == Qt.ToolTipRole:
-            return f"{t['path']}\n{quality(t)}  {t['channels']}ch"
+            kind = "lossy (compressed — not lossless)" if is_lossy(t) else "lossless"
+            return f"{t['path']}\n{quality(t)}  {t['channels']}ch  ·  {kind}"
         return None
 
 
@@ -1217,8 +1229,9 @@ class SongProxy(QSortFilterProxyModel):
         t = self.sourceModel().tracks[row]
         blob = t.get("_blob")
         if blob is None:
-            blob = t["_blob"] = " ".join(str(t.get(k, "")) for k in (
-                "title", "artist", "album", "albumartist", "genre", "year", "fmt")).lower()
+            blob = t["_blob"] = " ".join([str(t.get(k, "")) for k in (
+                "title", "artist", "album", "albumartist", "genre", "year", "fmt")]
+                + ["lossy" if is_lossy(t) else "lossless"]).lower()
         return all(w in blob for w in self.words)
 
 
@@ -2429,7 +2442,7 @@ class Analyzer(QObject):
         self._idle = False
 
     def available(self):
-        return np is not None and isinstance(self.win.player, NexusEngine)
+        return np is not None and (isinstance(self.win.player, NexusEngine) or self.win.jam_guest())
 
     def attach(self, w):
         self.users.add(w)
@@ -2460,11 +2473,16 @@ class Analyzer(QObject):
     def tick(self):
         eng = self.win.player
         n = 2048
-        playing = eng.playbackState() == QMediaPlayer.PlayingState
+        out = self.win.jam.output if self.win.jam_guest() else None
+        if out is not None:
+            eng = out
+            playing = out.started and not out.paused and not out.muted
+        else:
+            playing = isinstance(eng, NexusEngine) and eng.playbackState() == QMediaPlayer.PlayingState
         sens = max(0.3, float(self.win.cfg.get("vis_sensitivity", 100)) / 100)
         if playing:
             x = eng.vis_samples(n)
-            sr = float(eng.stream_rate or 44100)
+            sr = float(JAM_RATE if out is not None else (eng.stream_rate or 44100))
             if self._edges is None or self._edges[0] != sr:
                 hi = min(16000.0, sr / 2 * 0.95)
                 edges = np.geomspace(32.0, hi, self.N + 1)
@@ -3193,9 +3211,13 @@ class LyricsPage(QWidget):
         self.col.addStretch()
         self.area.verticalScrollBar().setValue(0)
         if synced:
-            self.set_pos(self.win.player.position(), force=True)
+            self.set_pos(int(self.win.jam_page.jam_pos()[0]) if self.win.jam_guest() else self.win.player.position(),
+                         force=True)
 
     def seek(self, ms):
+        if self.win.jam_guest():
+            self.win.toast(f"only {self.win.jam.host_name or 'the host'} can jump around in the song", ms=2500)
+            return
         self.win.player.setPosition(ms)
         self.user_until = 0
         if self.win.player.playbackState() != QMediaPlayer.PlayingState:
@@ -4192,7 +4214,7 @@ class DownloadPage(QWidget):
         na, nb = len(a["audio"]), len(b["audio"])
         return j >= 0.5 and abs(na - nb) <= max(2, int(na * 0.25))
 
-    def auto_download(self, artist, album, cover_url="", status=lambda *_a, **_k: None):
+    def auto_download(self, artist, album, cover_url="", status=lambda *_a, **_k: None, quiet=False):
         """find "artist album" on Soulseek, pick the best copy of that album, queue it (with backups)."""
         c = self.client()
         if not c.ready():
@@ -4236,15 +4258,18 @@ class DownloadPage(QWidget):
             if not cands:
                 msg = ("no lossless copy on Soulseek right now" if lossless else "not on Soulseek right now")
                 status(msg)
-                self.win.toast(f"“{album}”: {msg}", "search myself",
-                               lambda: (self.win.go("download"), self.q.setText(f"{artist} {album}"), self.search()))
+                if not quiet:
+                    self.win.toast(f"“{album}”: {msg}", "search myself",
+                                   lambda: (self.win.go("download"), self.q.setText(f"{artist} {album}"),
+                                            self.search()))
                 return
             best = cands[0]
             job = {"name": f"{artist} - {album}", "tried": [], "alts": cands[1:7], "cover_url": cover_url}
             self.download(best, job=job)
             status(f"downloading from {best['user']} · {best['fmt']}", True)
-            self.win.toast(f"downloading “{album}” ({best['fmt']}) — it lands in your library when done", "show",
-                           lambda: self.win.go("download"))
+            if not quiet:
+                self.win.toast(f"downloading “{album}” ({best['fmt']}) — it lands in your library when done", "show",
+                               lambda: self.win.go("download"))
         self.win.bg(work, done)
 
     def alternatives(self, row, rows):
@@ -5085,7 +5110,7 @@ class DiscordPresence:
         self.conn = None
 
     def _connect(self):
-        cid = (self.win.cfg.get("discord_client_id") or "").strip()
+        cid = (self.win.cfg.get("discord_client_id") or "").strip() or DISCORD_APP_ID
         if not cid.isdigit():
             self.status = "add your discord application id in settings → discord"
             return False
@@ -5816,7 +5841,8 @@ class NowPanel(QWidget):
             return
         a = w.albums.get(t["album_key"])
         n = len(a["tracks"]) if a else 0
-        bits = [f"TRACK {t['track']}" + (f" / {n}" if n else "") if t["track"] else "", quality(t)]
+        bits = [f"TRACK {t['track']}" + (f" / {n}" if n else "") if t["track"] else "", quality(t),
+                "LOSSY" if is_lossy(t) else ""]
         self.meta.setText("  ·  ".join(b for b in bits if b))
         self.title.setText(self.title.fontMetrics().elidedText(t["title"], Qt.ElideRight, width))
         self.title.setToolTip(t["title"])
@@ -6093,8 +6119,7 @@ class VisualizerPage(QWidget):
         super().showEvent(e)
         self.timer.start()
         self.refresh()
-        w = self.win
-        self.set_track(w.queue[w.qi] if 0 <= w.qi < len(w.queue) else None)
+        self.set_track(self.win.current_track())
 
     def hideEvent(self, e):
         self.timer.stop()
@@ -7877,8 +7902,11 @@ class Discover:
             e["albums"].add(t["album_key"])
             e["tracks"] += 1
             e["plays"] += int(stats.get(t["path"], {}).get("plays", 0))
-        out = [(a, e["plays"] * 2 + len(e["albums"]) * 3 + e["tracks"] * 0.3, len(e["albums"]), e["tracks"], e["plays"])
-               for a, e in by.items()]
+        fav = {_norm_name(a): a for a in (self.win.cfg.get("fav_artists") or [])}
+        out = [(a, e["plays"] * 2 + len(e["albums"]) * 3 + e["tracks"] * 0.3 + (8 if _norm_name(a) in fav else 0),
+                len(e["albums"]), e["tracks"], e["plays"]) for a, e in by.items()]
+        have = {_norm_name(a) for a in by}
+        out += [(name, 7.0, 0, 0, 0) for k, name in fav.items() if k not in have and k not in _SKIP_ARTISTS]
         out.sort(key=lambda x: -x[1])
         return out
 
@@ -8143,6 +8171,9 @@ class DiscoverPage(QWidget):
         self.status = QLabel(objectName="dim")
         head.addWidget(self.status, 0, Qt.AlignBottom)
         head.addSpacing(8)
+        b_imp = win.tbtn("import from Spotify…", lambda: win.go("import"), "pill")
+        b_imp.setToolTip("bring playlists, liked songs and artists over from Spotify, Apple Music and others")
+        head.addWidget(b_imp, 0, Qt.AlignBottom)
         self.b_refresh = win.tbtn("refresh", lambda: self.refresh(force=True), "pill")
         head.addWidget(self.b_refresh, 0, Qt.AlignBottom)
         v.addLayout(head)
@@ -8648,6 +8679,7 @@ class JamOutput:
         self.volume, self.started, self.stream = volume, False, None
         self.level = 0.0
         self.paused = self.muted = False      # just for this listener — the host keeps playing
+        self.vis = np.zeros(4096, np.float32) if np is not None else None
 
     def push(self, x):
         self.buf.push(x)
@@ -8672,8 +8704,13 @@ class JamOutput:
             np.clip(y, -1, 1, out=y)
             outdata[:n] = y
             self.level = float(np.abs(y).max())
+            m = data.mean(axis=1)[-4096:]
+            self.vis = np.concatenate([self.vis[len(m):], m])
         if n < frames:
             outdata[n:] = 0
+
+    def vis_samples(self, n):
+        return self.vis[-n:] if self.vis is not None else np.zeros(n, np.float32)
 
     def close(self):
         s, self.stream = self.stream, None
@@ -8683,6 +8720,15 @@ class JamOutput:
                 s.close()
             except Exception:
                 pass
+
+
+class UiCall(QObject):
+    """run a function on the ui thread from a worker thread: ui_call.run.emit(fn)."""
+    run = Signal(object)
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.run.connect(lambda fn: fn(), Qt.QueuedConnection)
 
 
 class JamService(QObject):
@@ -8702,6 +8748,8 @@ class JamService(QObject):
         self.output = None
         self.host_name = ""
         self.stop_ev = None
+        self.sending = {}                # host: rid → {"cancel": bool}
+        self.rx, self.rx_cur = {}, None  # guest: incoming files
 
     # ---- thread plumbing
     def _ensure_loop(self):
@@ -8937,10 +8985,17 @@ class JamService(QObject):
 
                 @ch.on("message")
                 def _m(m):
+                    if isinstance(m, (bytes, bytearray)):
+                        self._rx_chunk(m)
+                        return
                     try:
-                        self.got.emit(json.loads(m))
+                        d = json.loads(m)
                     except Exception:
-                        pass
+                        return
+                    if d.get("t") in ("fstart", "fend", "fdone"):
+                        self._rx_ctl(d)
+                    else:
+                        self.got.emit(d)
                 self.state.emit("guest", self.host_name)
 
             @pc.on("connectionstatechange")
@@ -8978,6 +9033,124 @@ class JamService(QObject):
         if self.output is not None:
             self.output.volume = v
 
+    # ---- sharing files (like soulseek, but straight from the host's library)
+    CHUNK = 32 * 1024
+
+    def send_files(self, peer, rid, files):
+        """host: files = [(path, name-for-the-listener, size)]."""
+        self.sending[rid] = {"cancel": False}
+        self._go(self._send_files, peer, rid, files)
+
+    def cancel_send(self, rid):
+        if rid in self.sending:
+            self.sending[rid]["cancel"] = True
+
+    async def _send_files(self, peer, rid, files):
+        import asyncio
+        st = self.sending.get(rid) or {"cancel": False}
+        total, sent, last = sum(f[2] for f in files) or 1, 0, 0.0
+        ok = True
+
+        def gone():
+            ch = self.chans.get(peer)
+            return ch is None or ch.readyState != "open" or st["cancel"] or self.role != "host"
+        try:
+            for i, (path, name, size) in enumerate(files):
+                if gone():
+                    ok = False
+                    break
+                ch = self.chans[peer]
+                ch.send(json.dumps({"t": "fstart", "rid": rid, "i": i, "n": len(files), "name": name,
+                                    "size": size, "total": total}))
+                with open(path, "rb") as f:
+                    while True:
+                        while not gone() and ch.bufferedAmount > (1 << 20):
+                            await asyncio.sleep(0.02)
+                        if gone():
+                            ok = False
+                            break
+                        b = f.read(self.CHUNK)
+                        if not b:
+                            break
+                        ch.send(b)
+                        sent += len(b)
+                        if _time.monotonic() - last > 0.4:
+                            last = _time.monotonic()
+                            self.got.emit({"t": "fsent", "rid": rid, "peer": peer, "sent": sent, "total": total,
+                                           "i": i, "n": len(files)})
+                        await asyncio.sleep(0)
+                if not ok:
+                    break
+                ch.send(json.dumps({"t": "fend", "rid": rid, "i": i}))
+        except Exception as e:
+            ok = False
+            log_problem(f"jam send: {type(e).__name__}: {e}")
+        ch = self.chans.get(peer)
+        if ch is not None and ch.readyState == "open":
+            try:
+                ch.send(json.dumps({"t": "fdone", "rid": rid, "ok": ok}))
+            except Exception:
+                pass
+        self.sending.pop(rid, None)
+        self.got.emit({"t": "fsent", "rid": rid, "peer": peer, "sent": sent, "total": total, "done": True, "ok": ok,
+                       "n": len(files)})
+
+    def _rx_ctl(self, d):
+        """guest (jam thread): file start / end / all done."""
+        rid, t = str(d.get("rid", "")), d.get("t")
+        job = self.rx.setdefault(rid, {"got": 0, "total": int(d.get("total") or 1), "files": [], "f": None,
+                                       "n": int(d.get("n") or 1), "i": 0, "last": 0.0})
+        if t == "fstart":
+            self._rx_close(job)
+            parts = [safe_name(x, "file") for x in str(d.get("name", "file")).replace("\\", "/").split("/")
+                     if x not in ("", ".", "..")][-3:] or ["file"]
+            dest = self.win.dir / "jam-incoming" / rid / Path(*parts)
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                job["f"], job["path"] = open(str(dest) + ".part", "wb"), dest
+            except OSError as e:
+                log_problem(f"jam receive: {e}")
+                job["f"] = None
+            job["i"], job["n"], job["total"] = int(d.get("i") or 0), int(d.get("n") or 1), int(d.get("total") or 1)
+            self.rx_cur = rid
+        elif t == "fend":
+            if job.get("f") is not None:
+                self._rx_close(job)
+                try:
+                    os.replace(str(job["path"]) + ".part", job["path"])
+                    job["files"].append(str(job["path"]))
+                except OSError:
+                    pass
+        elif t == "fdone":
+            self._rx_close(job)
+            self.rx.pop(rid, None)
+            self.rx_cur = None
+            self.got.emit({"t": "fdone", "rid": rid, "ok": bool(d.get("ok")), "paths": job["files"]})
+
+    def _rx_chunk(self, b):
+        job = self.rx.get(self.rx_cur)
+        if job is None:
+            return
+        if job.get("f") is not None:
+            try:
+                job["f"].write(b)
+            except OSError:
+                pass
+        job["got"] += len(b)
+        if _time.monotonic() - job["last"] > 0.3:
+            job["last"] = _time.monotonic()
+            self.got.emit({"t": "fprog", "rid": self.rx_cur, "got": job["got"], "total": job["total"],
+                           "i": job["i"], "n": job["n"]})
+
+    @staticmethod
+    def _rx_close(job):
+        f, job["f"] = job.get("f"), None
+        if f is not None:
+            try:
+                f.close()
+            except OSError:
+                pass
+
     # ---- leaving
     def leave(self, detail=""):
         was = self.role
@@ -9002,6 +9175,11 @@ class JamService(QObject):
         if self.output is not None:
             self.output.close()
             self.output = None
+        for st in self.sending.values():
+            st["cancel"] = True
+        for job in self.rx.values():
+            self._rx_close(job)
+        self.rx, self.rx_cur = {}, None
         self.pcs, self.chans, self.names = {}, {}, {}
         self.state.emit("off", detail)
 
@@ -9077,6 +9255,15 @@ class JamPage(QWidget):
                 f.addRow(win.L("your name"), self.name_in)
                 f.addRow(win.L("friends can add songs"), self._toggle("jam_allow_add"))
                 f.addRow(win.L("friends can skip"), self._toggle("jam_allow_skip"))
+                dlc = QComboBox()
+                opts = [("ask", "ask me"), ("yes", "always"), ("no", "never")]
+                for k, label in opts:
+                    dlc.addItem(win.L(label), k)
+                dlc.setCurrentIndex(next((i for i, (k, _l) in enumerate(opts)
+                                          if k == win.cfg.get("jam_allow_download", "ask")), 0))
+                dlc.currentIndexChanged.connect(lambda _i, c=dlc: (self.win.cfg.__setitem__(
+                    "jam_allow_download", c.currentData()), self.win.cfg.save(), self.send_perm()))
+                f.addRow(win.L("friends can download"), dlc)
                 cl.addLayout(f)
             cl.addStretch()
             cl.addWidget(win.tbtn(btn, fn, "pillPrimary"), 0, Qt.AlignLeft)
@@ -9106,6 +9293,20 @@ class JamPage(QWidget):
         self.people_list.customContextMenuRequested.connect(self.people_menu)
         self.people_list.setMaximumWidth(320)
         left.addWidget(self.people_list, 1)
+        self.req_lab = QLabel("DOWNLOAD REQUESTS", objectName="eyebrow")
+        left.addWidget(self.req_lab)
+        self.req_list = QListWidget(objectName="col")
+        self.req_list.setMaximumWidth(320)
+        self.req_list.setMaximumHeight(150)
+        self.req_list.setWordWrap(True)
+        self.req_list.setToolTip("double-click to send · right-click for more")
+        self.req_list.itemDoubleClicked.connect(lambda it: self.allow_request(it.data(Qt.UserRole)))
+        self.req_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.req_list.customContextMenuRequested.connect(self.request_menu)
+        left.addWidget(self.req_list)
+        self.requests = {}               # rid → request
+        self.req_lab.hide()
+        self.req_list.hide()
         hl.addLayout(left, 1)
         hl.addLayout(self._chat_box("host"), 2)
         self.stack.addWidget(host)
@@ -9154,6 +9355,23 @@ class JamPage(QWidget):
         brow.addWidget(self.b_skip)
         brow.addStretch()
         col.addLayout(brow)
+        drow = QHBoxLayout()
+        self.b_dl_song = win.tbtn("⤓ song", lambda: self.request_download(self.np_state.get("id"), "song"), "pill")
+        self.b_dl_song.setToolTip("ask to download this song into your library")
+        self.b_dl_album = win.tbtn("⤓ album", lambda: self.request_download(self.np_state.get("id"), "album"), "pill")
+        self.b_dl_album.setToolTip("ask to download the whole album into your library")
+        drow.addWidget(self.b_dl_song)
+        drow.addWidget(self.b_dl_album)
+        self.b_dl_song.hide()
+        self.b_dl_album.hide()
+        drow.addStretch()
+        col.addLayout(drow)
+        self.g_dl = QLabel(objectName="dim")
+        self.g_dl.setWordWrap(True)
+        self.g_dl.hide()
+        col.addWidget(self.g_dl)
+        self.dl_mode = "no"
+        self.my_reqs = {}                # rid → label
         col.addStretch()
         gl.addLayout(col)
         mid = QVBoxLayout()
@@ -9169,7 +9387,9 @@ class JamPage(QWidget):
         mid.addWidget(self.g_search)
         self.g_lib = QListWidget(objectName="col")
         self.g_lib.itemDoubleClicked.connect(self.add_song)
-        self.g_lib.setToolTip("double-click to add to their queue")
+        self.g_lib.setToolTip("double-click to add to their queue · right-click to download")
+        self.g_lib.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.g_lib.customContextMenuRequested.connect(self.lib_menu)
         mid.addWidget(self.g_lib, 1)
         gl.addLayout(mid, 2)
         gl.addLayout(self._chat_box("guest"), 2)
@@ -9264,6 +9484,7 @@ class JamPage(QWidget):
     # ---- host: tell listeners what's on
     def library_payload(self):
         self.lib_ids = {i: t["path"] for i, t in enumerate(self.win.tracks)}
+        self.lib_rev = {pth: i for i, pth in self.lib_ids.items()}
         items = [[i, t["title"], t["artist"], t["album"], int(t["duration"])] for i, t in enumerate(self.win.tracks)]
         return [items[i:i + 250] for i in range(0, len(items), 250)]
 
@@ -9274,6 +9495,8 @@ class JamPage(QWidget):
              "pos": int(w.player.position()), "dur": int(w.dur or 0)}
         if t:
             d.update(title=t["title"], artist=t["artist"], album=t["album"], fmt=quality(t))
+            if getattr(self, "lib_rev", None) is not None and t["path"] in self.lib_rev:
+                d["id"] = self.lib_rev[t["path"]]
             if with_cover:
                 pm = w.covers.get(t["cover"], 300)
                 ba = QByteArray()
@@ -9281,6 +9504,10 @@ class JamPage(QWidget):
                 buf.open(QIODevice.WriteOnly)
                 pm.toImage().scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation).save(buf, "JPG", 80)
                 d["cover"] = _b64.b64encode(bytes(ba)).decode()
+                ly = w.lyrics_for(t)
+                if ly:
+                    d["lyrics"] = {"synced": [list(x) for x in ly["synced"]] if ly.get("synced") else None,
+                                   "plain": (ly.get("plain") or "")[:20000] or None, "source": "host"}
         d["queue"] = [[x["title"], x["artist"]] for x in w.queue[w.qi + 1: w.qi + 9]] if t else []
         return d
 
@@ -9328,9 +9555,171 @@ class JamPage(QWidget):
             self.guest_timer.stop()
             self.np_state = {}
             self.perm_skip = False
+            self.my_reqs = {}
+            self.g_dl.hide()
             self.win.jam_guest_ended()
         self.win.update_controls()
         self.win.update_jam_badge()
+
+    # ---- downloads between jam members
+    def send_perm(self, peer=None):
+        if self.jam.role != "host":
+            return
+        w = self.win
+        self.jam.send({"t": "perm", "add": bool(w.cfg.get("jam_allow_add", True)),
+                       "skip": bool(w.cfg.get("jam_allow_skip", False)),
+                       "dl": w.cfg.get("jam_allow_download", "ask")}, peer)
+
+    def lib_menu(self, pos):
+        it = self.g_lib.itemAt(pos)
+        if not it or self.dl_mode == "no":
+            return
+        tid = it.data(Qt.UserRole)
+        m = QMenu(self)
+        m.addAction(self.win.L("download this song"), lambda: self.request_download(tid, "song"))
+        m.addAction(self.win.L("download the whole album"), lambda: self.request_download(tid, "album"))
+        m.exec(self.g_lib.viewport().mapToGlobal(pos))
+
+    def request_download(self, tid, what):
+        if tid is None:
+            self.win.toast("can't tell which song that is yet — wait a second and try again")
+            return
+        info = next((x for x in self.lib if x[0] == tid), None)
+        label = (f"“{info[3]}”" if what == "album" else f"“{info[1]}”") if info else f"this {what}"
+        rid = uuid.uuid4().hex[:8]
+        self.my_reqs[rid] = label
+        self.jam.send({"t": "dlreq", "rid": rid, "id": tid, "what": what})
+        host = self.jam.host_name or "the host"
+        self.show_dl(f"asked {host} for {label}…" if self.dl_mode == "ask" else f"getting {label}…")
+
+    def show_dl(self, text, hide_after=0):
+        self.g_dl.setText(self.win.L(text))
+        self.g_dl.show()
+        if hide_after:
+            QTimer.singleShot(hide_after, lambda: self.g_dl.text() == self.win.L(text) and self.g_dl.hide())
+
+    def received(self, d):
+        label = self.my_reqs.pop(d["rid"], "the download")
+        paths = d.get("paths") or []
+        done = self.win.importer.import_files(paths, move=True) if paths else []
+        shutil.rmtree(self.win.dir / "jam-incoming" / d["rid"], ignore_errors=True)
+        if done:
+            msg = f"saved {label} to your library ({len(done)} song{'s' if len(done) != 1 else ''})"
+        else:
+            msg = f"{label} didn't come through" + ("" if d.get("ok") else " (stopped)")
+        self.show_dl(msg, 8000)
+        self.win.toast(msg)
+
+    def got_request(self, peer, name, d):
+        w = self.win
+        rid = str(d.get("rid", ""))[:16]
+        mode = w.cfg.get("jam_allow_download", "ask")
+        tr = w.by_path.get(getattr(self, "lib_ids", {}).get(d.get("id")))
+        if mode == "no" or tr is None:
+            self.jam.send({"t": "dlno", "rid": rid, "why": "downloads are off" if mode == "no" else "song not found"},
+                          peer)
+            return
+        if d.get("what") == "album":
+            tracks = sorted(w.albums[tr["album_key"]]["tracks"] if tr["album_key"] in w.albums else [tr],
+                            key=lambda x: (x["disc"], x["track"], x["title"]))
+            label = f"“{tr['album']}” by {tr['albumartist'] or tr['artist']}"
+        else:
+            tracks, label = [tr], f"“{tr['title']}” by {tr['artist']}"
+        files = []
+        folder = safe_name(tr["albumartist"] or tr["artist"], "Unknown Artist") + "/" + \
+            safe_name(tr["album"], "Unknown Album")
+        for x in tracks:
+            try:
+                files.append((x["path"], f"{folder}/{os.path.basename(x['path'])}", os.path.getsize(x["path"])))
+            except OSError:
+                pass
+        if d.get("what") == "album" and files:
+            d0 = os.path.dirname(files[0][0])
+            try:
+                for fn in os.listdir(d0):
+                    st, ext = os.path.splitext(fn)
+                    if ext.lower() in IMG_EXT and st.lower() in COVER_NAMES:
+                        pth = os.path.join(d0, fn)
+                        files.append((pth, f"{folder}/{fn}", os.path.getsize(pth)))
+            except OSError:
+                pass
+        if not files:
+            self.jam.send({"t": "dlno", "rid": rid, "why": "files missing"}, peer)
+            return
+        n = sum(1 for f in files if os.path.splitext(f[0])[1].lower() in AUDIO_EXT)
+        mb = sum(f[2] for f in files) / 1e6
+        req = {"rid": rid, "peer": peer, "name": name, "files": files, "label": label,
+               "text": f"{name} · {label} ({n} song{'s' if n != 1 else ''}, {mb:.0f} MB)"}
+        self.requests[rid] = req
+        it = QListWidgetItem(req["text"])
+        it.setData(Qt.UserRole, rid)
+        req["item"] = it
+        self.req_list.addItem(it)
+        self.req_lab.show()
+        self.req_list.show()
+        if mode == "yes":
+            self.allow_request(rid)
+        else:
+            it.setText(req["text"] + "\n" + w.L("double-click to send"))
+            w.toast(f"{name} wants {label} ({mb:.0f} MB)", "send", lambda: self.allow_request(rid), ms=20000)
+            self.chat_line("⤓", f"{name} asked to download {label}")
+
+    def allow_request(self, rid):
+        req = self.requests.get(rid)
+        if not req or req.get("started"):
+            return
+        req["started"] = True
+        req["item"].setText(req["text"] + "\n" + self.win.L("sending…"))
+        self.jam.send_files(req["peer"], rid, req["files"])
+
+    def decline_request(self, rid):
+        req = self.requests.pop(rid, None)
+        if not req:
+            return
+        if req.get("started"):
+            self.jam.cancel_send(rid)
+        else:
+            self.jam.send({"t": "dlno", "rid": rid, "why": "declined"}, req["peer"])
+        self.req_list.takeItem(self.req_list.row(req["item"]))
+        if not self.requests:
+            self.req_lab.hide()
+            self.req_list.hide()
+
+    def request_menu(self, pos):
+        it = self.req_list.itemAt(pos)
+        if not it:
+            return
+        rid = it.data(Qt.UserRole)
+        req = self.requests.get(rid) or {}
+        m = QMenu(self)
+        if not req.get("started"):
+            m.addAction(self.win.L("send"), lambda: self.allow_request(rid))
+        m.addAction(self.win.L("stop" if req.get("started") else "decline"), lambda: self.decline_request(rid))
+        m.exec(self.req_list.viewport().mapToGlobal(pos))
+
+    def sent_progress(self, d):
+        req = self.requests.get(d.get("rid"))
+        if not req:
+            return
+        if d.get("done"):
+            req["item"].setText(req["text"] + "\n" + self.win.L("sent ✓" if d.get("ok") else "stopped"))
+            if d.get("ok"):
+                self.win.toast(f"sent {req['label']} to {req['name']}")
+            QTimer.singleShot(15000, lambda r=d["rid"]: self.forget_request(r))
+        else:
+            pct = int(100 * d["sent"] / max(1, d["total"]))
+            req["item"].setText(req["text"] + "\n" + self.win.L(f"sending {d['i'] + 1}/{d['n']} · {pct}%"))
+
+    def forget_request(self, rid):
+        req = self.requests.pop(rid, None)
+        if req is not None:
+            try:
+                self.req_list.takeItem(self.req_list.row(req["item"]))
+            except RuntimeError:
+                pass
+        if not self.requests:
+            self.req_lab.hide()
+            self.req_list.hide()
 
     def jam_pos(self):
         st = self.np_state
@@ -9366,8 +9755,7 @@ class JamPage(QWidget):
                 w.toast(f"{name} joined your jam")
                 for part in self.library_payload():
                     self.jam.send({"t": "lib", "items": part}, peer)
-                self.jam.send({"t": "perm", "add": bool(w.cfg.get("jam_allow_add", True)),
-                               "skip": bool(w.cfg.get("jam_allow_skip", False))}, peer)
+                self.send_perm(peer)
                 self.jam.send(self.np_payload(True), peer)
             elif t == "left":
                 self.people.pop(peer, None)
@@ -9388,6 +9776,12 @@ class JamPage(QWidget):
             elif t == "skip" and w.cfg.get("jam_allow_skip", False):
                 w.toast(f"{name} skipped")
                 w.next()
+            elif t == "dlreq":
+                self.got_request(peer, name, d)
+            elif t == "dlcancel":
+                self.jam.cancel_send(str(d.get("rid", "")))
+            elif t == "fsent":
+                self.sent_progress(d)
             return
         # guest
         if t == "np":
@@ -9405,7 +9799,9 @@ class JamPage(QWidget):
                              "album": d.get("album") or "", "fmt": d.get("fmt") or "", "cover_key": cover_key,
                              "pos": int(d.get("pos") or 0), "dur": int(d.get("dur") or 0),
                              "playing": bool(d.get("playing")), "at": _time.monotonic(),
-                             "queue": d.get("queue", [])}
+                             "queue": d.get("queue", []), "id": d.get("id"),
+                             "lyrics": d.get("lyrics") if d.get("cover") or new_song else
+                             self.np_state.get("lyrics")}
             w.jam_show_np(self.np_state)
             self.jam_tick()
             self.g_queue.clear()
@@ -9415,16 +9811,612 @@ class JamPage(QWidget):
             self.lib += [tuple(x) for x in d.get("items", [])]
             self.filter_lib(self.g_search.text())
         elif t == "perm":
+            self.dl_mode = d.get("dl") or "no"
+            for wdg in (self.b_dl_song, self.b_dl_album):
+                wdg.setVisible(self.dl_mode != "no")
+            show_lib = bool(d.get("add")) or self.dl_mode != "no"
             for wdg in (self.add_lab, self.g_search, self.g_lib):
-                wdg.setVisible(bool(d.get("add")))
+                wdg.setVisible(show_lib)
+            self.add_lab.setText(w.L("ADD FROM THEIR LIBRARY" if d.get("add") else "THEIR LIBRARY").upper())
+            self.g_lib.setToolTip(" · ".join(x for x in (
+                "double-click to add to their queue" if d.get("add") else "",
+                "right-click to download" if self.dl_mode != "no" else "") if x))
             self.b_skip.setVisible(bool(d.get("skip")))
             self.perm_skip = bool(d.get("skip"))
             w.update_controls()
         elif t == "chat":
             self.chat_line(d.get("from_name", "?"), d.get("text", ""))
+        elif t == "dlno":
+            label = self.my_reqs.pop(str(d.get("rid", "")), "that")
+            msg = f"{self.jam.host_name or 'the host'} didn't send {label}" + (f" ({d['why']})" if d.get("why") else "")
+            self.show_dl(msg, 6000)
+            w.toast(msg)
+        elif t == "fprog":
+            label = self.my_reqs.get(str(d.get("rid", "")), "")
+            pct = int(100 * d["got"] / max(1, d["total"]))
+            self.show_dl(f"⤓ {label} — song {d['i'] + 1}/{d['n']} · {pct}%  ({d['got'] / 1e6:.0f} / "
+                         f"{d['total'] / 1e6:.0f} MB)")
+        elif t == "fdone":
+            self.received(d)
         elif t == "kicked":
             self.jam.leave("the host removed you from the jam")
             w.toast("the host removed you from the jam")
+
+
+# ------------------------------------------------------------------ import from spotify / apple music / others
+# no streaming-service logins: spotify's api only allows 5 users per app now, apple's needs a paid developer key.
+# instead everyone can use the data exports those services already give you, plus any csv / m3u playlist.
+_IMP_TITLE = ("track name", "trackname", "track", "song title", "song name", "song", "title", "name", "track title")
+_IMP_ARTIST = ("artist name(s)", "artist names", "artist name", "artistname", "artists", "artist", "album artist",
+               "creator")
+_IMP_ALBUM = ("album name", "album title", "albumname", "album")
+_IMP_PLAYLIST = ("playlist name", "playlist", "playlist title")
+
+
+def _imp_pick(d, keys):
+    low = {str(k).strip().lower(): v for k, v in d.items()}
+    for k in keys:
+        v = low.get(k)
+        if isinstance(v, list):
+            v = ", ".join(str(x.get("name", x)) if isinstance(x, dict) else str(x) for x in v)
+        if v not in (None, ""):
+            return str(v).strip()
+    return ""
+
+
+def _imp_item(d):
+    t, a = _imp_pick(d, _IMP_TITLE), _imp_pick(d, _IMP_ARTIST)
+    return {"title": t, "artist": a, "album": _imp_pick(d, _IMP_ALBUM)} if t else None
+
+
+class ImportResult:
+    def __init__(self, source):
+        self.source = source
+        self.playlists = []              # [(name, [item])]
+        self.liked = []                  # [item]
+        self.artists = []                # [name]
+        self.albums = []                 # [item without title]
+
+    def add_playlist(self, name, items):
+        items = [i for i in items if i]
+        if items:
+            self.playlists.append((name or "imported", items))
+
+    def merge(self, other):
+        self.playlists += other.playlists
+        self.liked += other.liked
+        self.artists += other.artists
+        self.albums += other.albums
+        if self.source == "files" and other.source != "files":
+            self.source = other.source
+
+    def empty(self):
+        return not (self.playlists or self.liked or self.artists or self.albums)
+
+
+def _read_text(data):
+    for enc in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
+        try:
+            txt = data.decode(enc)
+            if enc != "utf-16" or "\t" in txt or "," in txt:
+                return txt
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", "replace")
+
+
+def parse_import(name, data, depth=0):
+    """→ ImportResult for one file (zips are opened, including zips inside zips)."""
+    import csv
+    import io
+    import plistlib
+    import zipfile
+    low = name.lower().replace("\\", "/")
+    base = os.path.basename(low)
+    stem = os.path.splitext(os.path.basename(name))[0]
+    res = ImportResult("files")
+    if low.endswith(".zip") and depth < 3:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = [n for n in z.namelist() if not n.endswith("/")]
+            # apple's export: tracks and playlists are separate files that refer to each other
+            apple_tracks = next((n for n in names if n.lower().endswith("apple music library tracks.json")), None)
+            for n in names:
+                ext = os.path.splitext(n.lower())[1]
+                if n.lower().endswith("apple music library playlists.json") and apple_tracks:
+                    continue
+                if ext in (".json", ".xml", ".csv", ".txt", ".m3u", ".m3u8", ".zip", ".tsv"):
+                    try:
+                        sub = parse_import(n, z.read(n), depth + 1)
+                    except Exception:
+                        continue
+                    if n == apple_tracks:
+                        sub = _apple_privacy(z, apple_tracks, names)
+                    res.merge(sub)
+        return res
+    if low.endswith(".xml") or data[:200].lstrip().startswith(b"<?xml") and b"plist" in data[:400]:
+        try:
+            pl = plistlib.loads(data)
+        except Exception:
+            return res
+        return _itunes_xml(pl)
+    if low.endswith(".json"):
+        try:
+            j = json.loads(_read_text(data))
+        except ValueError:
+            return res
+        if base == "yourlibrary.json" and isinstance(j, dict):
+            res.source = "Spotify"
+            res.liked = [{"title": x.get("track", ""), "artist": x.get("artist", ""), "album": x.get("album", "")}
+                         for x in j.get("tracks", []) if x.get("track")]
+            res.artists = [x.get("name", "") for x in j.get("artists", []) if x.get("name")]
+            res.albums = [{"title": "", "artist": x.get("artist", ""), "album": x.get("album", "")}
+                          for x in j.get("albums", []) if x.get("album")]
+            return res
+        if isinstance(j, dict) and isinstance(j.get("playlists"), list):
+            res.source = "Spotify"
+            for p in j["playlists"]:
+                items = []
+                for it in p.get("items", []):
+                    tr = it.get("track") if isinstance(it, dict) else None
+                    if tr:
+                        items.append({"title": tr.get("trackName", ""), "artist": tr.get("artistName", ""),
+                                      "album": tr.get("albumName", "")})
+                res.add_playlist(p.get("name"), [i for i in items if i["title"]])
+            return res
+        rows = j if isinstance(j, list) else next((v for v in j.values() if isinstance(v, list)), []) \
+            if isinstance(j, dict) else []
+        res.add_playlist(stem, [_imp_item(r) for r in rows if isinstance(r, dict)])
+        return res
+    if low.endswith((".m3u", ".m3u8")):
+        items, pending = [], None
+        for ln in _read_text(data).splitlines():
+            ln = ln.strip()
+            if ln.upper().startswith("#EXTINF"):
+                info = ln.split(",", 1)[1] if "," in ln else ""
+                a, _, t = info.partition(" - ")
+                pending = {"title": t.strip() or a.strip(), "artist": a.strip() if t else "", "album": ""}
+            elif ln and not ln.startswith("#"):
+                item = pending or {"title": os.path.splitext(os.path.basename(ln.replace("\\", "/")))[0],
+                                   "artist": "", "album": ""}
+                item["path"] = ln
+                items.append(item)
+                pending = None
+        res.add_playlist(stem, items)
+        return res
+    if low.endswith((".csv", ".txt", ".tsv")):
+        txt = _read_text(data)
+        first = txt.splitlines()[0] if txt else ""
+        delim = "\t" if first.count("\t") > first.count(",") else ("," if "," in first else ";")
+        rows = list(csv.DictReader(io.StringIO(txt), delimiter=delim))
+        if not rows or not any(_imp_pick(rows[0], _IMP_TITLE) for _ in [0]):
+            return res
+        if "spotify" in first.lower() or "track uri" in first.lower():
+            res.source = "Spotify"
+        groups = OrderedDict()
+        for r in rows:
+            item = _imp_item(r)
+            if item:
+                groups.setdefault(_imp_pick(r, _IMP_PLAYLIST) or stem, []).append(item)
+        liked_names = {"liked songs", "liked", "liked_songs", "music library songs", "loved", "favorites",
+                       "favourites", "your music", "saved tracks"}
+        for g, items in groups.items():
+            if g.lower().replace("_", " ") in liked_names:
+                res.liked += items
+            else:
+                res.add_playlist(g, items)
+        return res
+    return res
+
+
+def _itunes_xml(pl):
+    res = ImportResult("Apple Music")
+    tracks = pl.get("Tracks") or {}
+
+    def item(tid):
+        t = tracks.get(str(tid)) or tracks.get(tid) or {}
+        if not t.get("Name"):
+            return None
+        return {"title": t.get("Name", ""), "artist": t.get("Artist") or t.get("Album Artist") or "",
+                "album": t.get("Album", "")}
+    res.liked = [i for i in (item(k) for k, t in tracks.items() if t.get("Loved") or t.get("Favorited")) if i]
+    for p in pl.get("Playlists") or []:
+        if p.get("Master") or p.get("Distinguished Kind") or p.get("Folder") or p.get("Name") in ("Library",):
+            continue
+        res.add_playlist(p.get("Name"), [item(x.get("Track ID")) for x in p.get("Playlist Items") or []])
+    if not res.playlists and not res.liked:          # just a library: bring over the artists at least
+        res.artists = sorted({t.get("Artist") for t in tracks.values() if t.get("Artist")})
+    return res
+
+
+def _apple_privacy(z, tracks_name, names):
+    res = ImportResult("Apple Music")
+    try:
+        rows = json.loads(_read_text(z.read(tracks_name)))
+    except Exception:
+        return res
+    by_id = {}
+    for r in rows if isinstance(rows, list) else []:
+        it = _imp_item(r)
+        if not it:
+            continue
+        for k in ("Track Identifier", "Apple Music Track Identifier", "Item Identifier"):
+            if r.get(k) is not None:
+                by_id[str(r[k])] = it
+        if str(r.get("Favorite Status", r.get("Is Favorite", ""))).lower() in ("true", "favorited", "loved", "1"):
+            res.liked.append(it)
+    pl_name = next((n for n in names if n.lower().endswith("apple music library playlists.json")), None)
+    if pl_name:
+        try:
+            pls = json.loads(_read_text(z.read(pl_name)))
+        except Exception:
+            pls = []
+        for p in pls if isinstance(pls, list) else []:
+            ids = p.get("Playlist Item Identifiers") or p.get("Track Identifiers") or []
+            res.add_playlist(p.get("Title") or p.get("Name"), [by_id.get(str(i)) for i in ids])
+    if not res.playlists and not res.liked:
+        res.artists = sorted({i["artist"] for i in by_id.values() if i["artist"]})
+    return res
+
+
+def _imp_norm(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[\(\[][^\)\]]*(feat|ft\.|with |remaster|version|edit|mix|live|mono|stereo|deluxe|bonus)"
+               r"[^\)\]]*[\)\]]", " ", s)
+    s = re.sub(r"\s-\s.*(remaster|version|edit|mix|live|mono|stereo).*$", " ", s)
+    s = re.sub(r"\b(feat|ft)\.?\s.*$", " ", s)
+    s = s.replace("&", " and ")
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return " ".join(s.split())
+
+
+def _imp_artist_tokens(a):
+    first = re.split(r",|;| & | x | feat\.? | ft\.? ", str(a or "").lower())[0]
+    return set(_imp_norm(first).split()) - {"the", "and"}
+
+
+class LibraryMatcher:
+    """finds an imported song in your library (title + artist, forgiving about remasters, feat., accents)."""
+
+    def __init__(self, tracks):
+        self.by_title = {}
+        self.by_path = {}
+        for t in tracks:
+            self.by_title.setdefault(_imp_norm(t["title"]), []).append(t)
+            self.by_path[os.path.normcase(os.path.abspath(t["path"]))] = t
+
+    def find(self, item):
+        if item.get("path"):
+            t = self.by_path.get(os.path.normcase(os.path.abspath(item["path"])))
+            if t:
+                return t
+        cands = self.by_title.get(_imp_norm(item["title"]))
+        if not cands:
+            return None
+        want = _imp_artist_tokens(item.get("artist"))
+        alb = _imp_norm(item.get("album"))
+        best, best_s = None, -1
+        for t in cands:
+            have = _imp_artist_tokens(t["artist"]) | _imp_artist_tokens(t["albumartist"])
+            if want and not (want & have):
+                continue
+            sc = (2 if alb and _imp_norm(t["album"]) == alb else 0) + (0 if is_lossy(t) else 1)
+            if sc > best_s:
+                best, best_s = t, sc
+        return best
+
+
+class ImportPage(QWidget):
+    """bring playlists, liked songs and artists over from spotify / apple music / anything that exports a csv."""
+
+    def __init__(self, win):
+        super().__init__(objectName="importpage")
+        self.win = win
+        self.result, self.rows, self.missing = None, [], []
+        self.dl_queue, self.dl_busy, self.dl_done = [], False, 0
+        self.setAcceptDrops(True)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(sa)
+        body = QWidget()
+        sa.setWidget(body)
+        v = QVBoxLayout(body)
+        v.setContentsMargins(32, 28, 28, 18)
+        v.setSpacing(12)
+        head = QHBoxLayout()
+        tv = QVBoxLayout()
+        tv.addWidget(QLabel("BRING YOUR MUSIC OVER", objectName="eyebrow"))
+        tv.addWidget(QLabel("Import", objectName="h1"))
+        head.addLayout(tv, 1)
+        head.addWidget(win.tbtn("choose files…", self.pick, "pillPrimary"), 0, Qt.AlignBottom)
+        v.addLayout(head)
+        self.status = QLabel(win.L("drop an export here, or choose files. nothing is uploaded anywhere — it's all "
+                                   "read on your pc."), objectName="dim")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+
+        self.howto = QWidget()
+        hg = QGridLayout(self.howto)
+        hg.setContentsMargins(0, 6, 0, 0)
+        hg.setSpacing(14)
+        guides = (
+            ("Spotify", "playlists, liked songs, followed artists",
+             "spotify.com → account → privacy settings → “download your data” → tick “account data” and request. "
+             "Spotify emails you a zip (can take a few days). Pick that zip here as-is.\n\nFaster for single "
+             "playlists: any CSV export tool (Exportify, TuneMyMusic, Soundiiz)."),
+            ("Apple Music", "playlists, loved songs",
+             "Windows: in iTunes or the Apple Music app, File → Library → Export Library… and pick the "
+             "Library.xml it saves.\n\nOr privacy.apple.com → “get a copy of your data” → Apple Media Services; "
+             "pick the zip you get."),
+            ("Anything else", "YouTube Music, Tidal, Deezer, other players",
+             "CSV/TXT exports with title and artist columns (Google Takeout's YouTube Music files, TuneMyMusic, "
+             "Soundiiz…), and .m3u / .m3u8 playlists from other players (Harmonoid, foobar2000, MusicBee, VLC)."),
+        )
+        for i, (name, what, how) in enumerate(guides):
+            card = QWidget(objectName="reccard")
+            card.setAttribute(Qt.WA_StyledBackground, True)
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(18, 16, 18, 16)
+            cl.setSpacing(6)
+            cl.addWidget(QLabel(name, objectName="h2"))
+            cl.addWidget(QLabel(win.L(what).upper(), objectName="eyebrow"))
+            t = QLabel(win.L(how), objectName="dim")
+            t.setWordWrap(True)
+            cl.addWidget(t)
+            cl.addStretch()
+            hg.addWidget(card, 0, i)
+        v.addWidget(self.howto)
+
+        self.res_box = QWidget()
+        rl = QVBoxLayout(self.res_box)
+        rl.setContentsMargins(0, 6, 0, 0)
+        rl.setSpacing(10)
+        self.summary = QLabel(objectName="h2")
+        self.summary.setWordWrap(True)
+        rl.addWidget(self.summary)
+        self.found = QLabel(objectName="dim")
+        self.found.setWordWrap(True)
+        rl.addWidget(self.found)
+        rl.addWidget(QLabel(win.L("PLAYLISTS TO MAKE"), objectName="eyebrow"))
+        self.list = QListWidget(objectName="col")
+        self.list.setMinimumHeight(220)
+        rl.addWidget(self.list)
+        opts = QHBoxLayout()
+        self.c_artists = QCheckBox(win.L("use your followed artists for Discover"))
+        self.c_artists.setChecked(True)
+        opts.addWidget(self.c_artists)
+        opts.addStretch()
+        rl.addLayout(opts)
+        brow = QHBoxLayout()
+        brow.addWidget(win.tbtn("make playlists", self.apply, "pillPrimary"))
+        self.b_missing = win.tbtn("get missing albums", self.download_missing, "pill")
+        self.b_missing.setToolTip("finds the albums you don't have on Soulseek and downloads them (lossless if "
+                                  "settings → downloads says so). the playlists fill in as they arrive.")
+        brow.addWidget(self.b_missing)
+        self.b_show_missing = win.tbtn("show missing", self.show_missing, "pill")
+        brow.addWidget(self.b_show_missing)
+        brow.addStretch()
+        rl.addLayout(brow)
+        self.miss_lab = QLabel(win.L("MISSING ALBUMS — untick any you don't want"), objectName="eyebrow")
+        self.miss_lab.hide()
+        rl.addWidget(self.miss_lab)
+        self.miss_list = QListWidget(objectName="col")
+        self.miss_list.setMinimumHeight(200)
+        self.miss_list.hide()
+        rl.addWidget(self.miss_list)
+        self.dl_status = QLabel(objectName="time")
+        self.dl_status.setWordWrap(True)
+        rl.addWidget(self.dl_status)
+        self.res_box.hide()
+        v.addWidget(self.res_box)
+        v.addStretch()
+
+    # ---- loading
+    def pick(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "import from Spotify / Apple Music / other players", str(Path.home() / "Downloads"),
+            "exports (*.zip *.json *.xml *.csv *.txt *.tsv *.m3u *.m3u8);;all files (*)")
+        if files:
+            self.load(files)
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        files = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
+        if files:
+            self.load(files)
+
+    def load(self, files):
+        self.status.setText(self.win.L("reading…"))
+        tracks = list(self.win.tracks)
+
+        def work():
+            res = ImportResult("files")
+            for f in files:
+                with open(f, "rb") as fh:
+                    res.merge(parse_import(f, fh.read()))
+            m = LibraryMatcher(tracks)
+            return res, m
+
+        def done(out, err):
+            if err:
+                self.status.setText(self.win.L(f"couldn't read that: {err}"))
+                return
+            res, m = out
+            if res.empty():
+                self.status.setText(self.win.L("didn't find any songs or playlists in that. for spotify pick the "
+                                               "zip they emailed; for apple music the Library.xml."))
+                return
+            self.show_result(res, m)
+        self.win.bg(work, done)
+
+    def show_result(self, res, matcher):
+        self.result, self.matcher = res, matcher
+        src = res.source if res.source != "files" else "your files"
+        lists = list(res.playlists)
+        if res.liked:
+            lists.insert(0, (f"Liked Songs ({src})" if src != "your files" else "Liked Songs", res.liked))
+        self.rows, self.missing = [], []
+        all_items, hit = 0, 0
+        self.list.clear()
+        miss_keys = OrderedDict()
+        for name, items in lists:
+            found = [matcher.find(i) for i in items]
+            n_hit = sum(1 for f in found if f)
+            all_items += len(items)
+            hit += n_hit
+            it = QListWidgetItem(f"{name}   ·   {n_hit} / {len(items)} in your library")
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if n_hit else Qt.Unchecked)
+            self.list.addItem(it)
+            self.rows.append((name, items, it))
+            for i, f in zip(items, found):
+                if not f:
+                    k = (_imp_norm(re.split(r",|;", i["artist"])[0]), _imp_norm(i["album"]) or _imp_norm(i["title"]))
+                    miss_keys.setdefault(k, {"artist": re.split(r",|;", i["artist"])[0].strip(),
+                                             "album": i["album"], "title": i["title"], "n": 0})["n"] += 1
+        for a in res.albums:
+            k = (_imp_norm(a["artist"]), _imp_norm(a["album"]))
+            if a["album"]:
+                miss_keys.setdefault(k, {"artist": a["artist"], "album": a["album"], "title": "", "n": 0})
+        have_albums = {(_imp_norm(t["albumartist"] or t["artist"]), _imp_norm(t["album"])) for t in self.win.tracks}
+        self.missing = [m for k, m in miss_keys.items() if m["album"] and
+                        (_imp_norm(m["artist"]), _imp_norm(m["album"])) not in have_albums]
+        self.missing.sort(key=lambda m: -m["n"])
+        bits = []
+        if res.playlists:
+            bits.append(f"{len(res.playlists)} playlist{'s' if len(res.playlists) != 1 else ''}")
+        if res.liked:
+            bits.append(f"{len(res.liked)} liked songs")
+        if res.artists:
+            bits.append(f"{len(res.artists)} artists")
+        if res.albums:
+            bits.append(f"{len(res.albums)} saved albums")
+        self.summary.setText(f"{src}: " + ", ".join(bits))
+        pct = int(100 * hit / all_items) if all_items else 0
+        self.found.setText(self.win.L(
+            f"{hit} of {all_items} songs are already in your library ({pct}%). "
+            f"{len(self.missing)} albums are missing." if all_items else
+            f"{len(self.missing)} albums you don't have yet."))
+        self.c_artists.setVisible(bool(res.artists))
+        self.b_missing.setVisible(bool(self.missing))
+        self.b_show_missing.setVisible(bool(self.missing))
+        self.miss_list.hide()
+        self.miss_lab.hide()
+        self.howto.hide()
+        self.res_box.show()
+        self.status.setText(self.win.L("pick which playlists to make, then “make playlists”. missing songs get added "
+                                       "to them later, when they show up in your library."))
+
+    # ---- applying
+    def apply(self):
+        w = self.win
+        imports = load_json(w.dir / "imports.json", {})
+        made = 0
+        for name, items, it in self.rows:
+            if it.checkState() != Qt.Checked:
+                continue
+            final = name
+            if final in w.playlists and final not in imports:
+                final = f"{name} (imported)"
+            imports[final] = {"source": self.result.source, "items": items}
+            paths = list(w.playlists.get(final, []))
+            for i in items:
+                t = self.matcher.find(i)
+                if t and t["path"] not in paths:
+                    paths.append(t["path"])
+            w.playlists[final] = paths
+            made += 1
+        save_json(w.dir / "imports.json", imports)
+        w.save_playlists()
+        if self.result.artists and self.c_artists.isChecked():
+            fav = list(dict.fromkeys(list(w.cfg.get("fav_artists") or []) + self.result.artists))
+            w.cfg["fav_artists"] = fav[:2000]
+            w.cfg.save()
+        msg = f"made {made} playlist{'s' if made != 1 else ''}"
+        if self.result.artists and self.c_artists.isChecked():
+            msg += f" · Discover now knows your {len(self.result.artists)} artists"
+        w.toast(msg)
+        self.status.setText(w.L(msg + "."))
+
+    def show_missing(self):
+        self.miss_list.clear()
+        for m in self.missing[:1000]:
+            it = QListWidgetItem(f"{m['artist']}  —  {m['album']}" + (f"   ·   {m['n']} song{'s' if m['n'] != 1 else ''}"
+                                                                      if m["n"] else ""))
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked)
+            it.setData(Qt.UserRole, m)
+            self.miss_list.addItem(it)
+        self.miss_list.show()
+        self.miss_lab.show()
+
+    def download_missing(self):
+        if not self.miss_list.count():
+            self.show_missing()
+        chosen = [self.miss_list.item(i).data(Qt.UserRole) for i in range(self.miss_list.count())
+                  if self.miss_list.item(i).checkState() == Qt.Checked]
+        if not chosen:
+            return
+        dp = self.win.download_page
+        if not dp.client().ready():
+            self.win.toast("set a Soulseek login in settings → downloads first", "open",
+                           lambda: self.win.go("settings", "downloads"))
+            return
+        queued = {(m["artist"], m["album"]) for m in self.dl_queue}
+        self.dl_queue += [m for m in chosen if (m["artist"], m["album"]) not in queued]
+        self.win.toast(f"getting {len(self.dl_queue)} albums one by one — you can keep using Nexus", "downloads",
+                       lambda: self.win.go("download"))
+        self.pump()
+
+    def pump(self):
+        if self.dl_busy or not self.dl_queue:
+            if not self.dl_queue and not self.dl_busy and self.dl_done:
+                self.dl_status.setText(self.win.L(f"done looking: {self.dl_done} albums handled. playlists fill in "
+                                                  f"as downloads land in your library."))
+            return
+        m = self.dl_queue.pop(0)
+        self.dl_busy = True
+        left = len(self.dl_queue)
+        self.dl_status.setText(self.win.L(f"looking for {m['artist']} — {m['album']}  ({left} more after this)"))
+
+        def status(text, *_a, **_k):
+            if text.startswith("searching"):
+                return
+            self.dl_status.setText(self.win.L(f"{m['artist']} — {m['album']}: {text}"))
+            self.dl_busy = False
+            self.dl_done += 1
+            QTimer.singleShot(1500, self.pump)
+        self.win.download_page.auto_download(m["artist"], m["album"], status=status, quiet=True)
+
+
+def rematch_imports(win):
+    """after a rescan: put newly arrived songs into the playlists they were imported for."""
+    imports = load_json(win.dir / "imports.json", {})
+    if not imports:
+        return 0
+    m = LibraryMatcher(win.tracks)
+    added = 0
+    for name, info in imports.items():
+        if name not in win.playlists:
+            continue
+        paths = win.playlists[name]
+        have = set(paths)
+        for i in info.get("items", []):
+            t = m.find(i)
+            if t and t["path"] not in have:
+                paths.append(t["path"])
+                have.add(t["path"])
+                added += 1
+    if added:
+        win.save_playlists()
+    return added
 
 
 # ------------------------------------------------------------------ settings
@@ -9817,6 +10809,20 @@ class Settings(QWidget):
         drow.addWidget(self.discord_status, 1)
         fdc.addRow("", drow)
         tabs.addTab(self.scroll(dw), "discord")
+
+        # ---- import
+        iw = QWidget()
+        il = QVBoxLayout(iw)
+        il.setContentsMargins(0, 0, 0, 0)
+        il.setSpacing(12)
+        itx = QLabel(win.L("bring your playlists, liked songs and followed artists over from Spotify, Apple Music, "
+                           "YouTube Music or another player. Nexus matches them to the songs you have and can get "
+                           "the missing albums from Soulseek."), objectName="dim")
+        itx.setWordWrap(True)
+        il.addWidget(itx)
+        il.addWidget(win.tbtn("open import", lambda: win.go("import"), "pillPrimary"), 0, Qt.AlignLeft)
+        il.addStretch()
+        tabs.addTab(self.scroll(iw), "import")
 
         # ---- update
         up = QWidget()
@@ -10297,6 +11303,8 @@ class Main(QMainWindow):
         self.presence_timer.setInterval(400)
         self.presence_timer.timeout.connect(self._push_presence)
         self._pres_pos = (0, 0.0)
+        self.ui_call = UiCall(self)
+        QTimer.singleShot(6000, self.maybe_offer_discord)
         if int(self.cfg.get("background_alpha", 100)) < 100:
             self.setAttribute(Qt.WA_TranslucentBackground, True)
 
@@ -10477,14 +11485,15 @@ class Main(QMainWindow):
         self.tag_page = TagEditorPage(self)
         self.discover_page = DiscoverPage(self)
         self.jam_page = JamPage(self)
-        self.pages = {"visualizer": self.vis_page, "tags": self.tag_page, "discover": self.discover_page,
+        self.import_page = ImportPage(self)
+        self.pages = {"import": self.import_page, "visualizer": self.vis_page, "tags": self.tag_page, "discover": self.discover_page,
                       "jam": self.jam_page, "browse": self.browser, "albums": albums_page, "artists": self.artists_page,
                       "songs": songs_page, "queue": self.queue_page, "album": self.collection,
                       "playlist": self.collection, "lyrics": self.lyrics_page, "download": self.download_page,
                       "inspect": self.inspect_page}
         for w in (self.browser, albums_page, self.artists_page, songs_page, self.queue_page, self.collection,
                   self.lyrics_page, self.download_page, self.inspect_page, self.vis_page, self.tag_page,
-                  self.discover_page, self.jam_page):
+                  self.discover_page, self.jam_page, self.import_page):
             self.stack.addWidget(w)
 
     def make_search(self):
@@ -10765,7 +11774,7 @@ class Main(QMainWindow):
         rl.addWidget(self.b_eq)
         self.b_queue = IconButton(self, "queue", 30)
         self.b_queue.setToolTip("queue")
-        self.b_queue.clicked.connect(lambda: self.go("queue"))
+        self.b_queue.clicked.connect(lambda: self.go("jam" if self.jam_guest() else "queue"))
         self.b_panel = IconButton(self, "panel", 30)
         self.b_panel.setToolTip("now playing panel")
         self.b_panel.clicked.connect(self.toggle_panel)
@@ -10960,6 +11969,12 @@ class Main(QMainWindow):
         self.covers.clear()
         self.set_tracks(tracks)
         self.save_library()
+        try:
+            n = rematch_imports(self)
+            if n:
+                self.toast(f"{n} new song{'s' if n != 1 else ''} added to your imported playlists")
+        except Exception as e:
+            log_problem(f"rematch imports: {e}")
 
     def import_skin(self, f):
         try:
@@ -11109,7 +12124,7 @@ class Main(QMainWindow):
         if page in ("settings", "eq"):
             self.fresh_page(page, arg)
         if page == "lyrics":
-            self.lyrics_page.load(self.queue[self.qi] if 0 <= self.qi < len(self.queue) else None)
+            self.lyrics_page.load(self.current_track())
         if page == "inspect" and arg:
             self.inspect_page.load(arg)
         if page == "tags":
@@ -11361,7 +12376,7 @@ class Main(QMainWindow):
         sub = f"{t['artist']} — {t['album']}"
         self.np_artist.setText(self.np_artist.fontMetrics().elidedText(sub, Qt.ElideRight, 250))
         self.np_artist.setToolTip(sub)
-        self.np_quality.setText(quality(t))
+        self.np_quality.setText(quality(t) + ("  ·  lossy" if is_lossy(t) else ""))
         self.np_quality.setVisible(bool(quality(t)) and not self.cfg.get("now_panel", True))
         self.now_panel.set_track(t)
         self.root.set_cover(t["cover"])
@@ -11428,6 +12443,7 @@ class Main(QMainWindow):
         if out is None:
             return
         out.paused = not out.paused
+        self.push_presence()
         self.toast("paused just for you — the jam keeps going" if out.paused else "back in the jam", ms=2200)
         self.update_controls()
 
@@ -11461,9 +12477,29 @@ class Main(QMainWindow):
         self.np_quality.setVisible(bool(st["fmt"]) and not self.cfg.get("now_panel", True))
         self.now_panel.set_remote(st)
         self.root.set_cover(st["cover_key"])
+        self.push_presence()
+        if self.page == "lyrics":
+            self.lyrics_page.load(self.jam_track())
+        if self.page == "visualizer":
+            self.vis_page.set_track(self.jam_track())
         host = (getattr(self.jam, "host_name", "") or "host")
         self.setWindowTitle(f"{title} — {st['artist']}  ·  jam with {host}" if st["title"] else APP_NAME)
         self.update_controls()
+
+    def jam_track(self):
+        st = getattr(self.jam_page, "np_state", None) or {}
+        if not st.get("title"):
+            return None
+        return {"path": f"jam:{st['artist']}:{st['title']}", "title": st["title"], "artist": st["artist"],
+                "album": st["album"], "albumartist": st["artist"], "cover": st.get("cover_key", ""),
+                "album_key": None, "track": 0, "fmt": "", "duration": st["dur"] / 1000,
+                "_lyrics": st.get("lyrics")}
+
+    def current_track(self):
+        """what's playing for you: your own song, or the host's while listening along."""
+        if self.jam_guest():
+            return self.jam_track()
+        return self.queue[self.qi] if 0 <= self.qi < len(self.queue) else None
 
     def jam_show_pos(self, ms, dur):
         if not hasattr(self, "seek"):
@@ -11473,6 +12509,10 @@ class Main(QMainWindow):
             self.t_pos.setText(fmt_time(ms / 1000))
         self.t_dur.setText("-" + fmt_time((dur - ms) / 1000) if self.cfg["show_remaining"] else fmt_time(dur / 1000))
         self.now_panel.set_pos(ms, dur)
+        if self.page == "lyrics":
+            self.lyrics_page.set_pos(int(ms))
+        if self.page == "visualizer":
+            self.vis_page.set_pos(int(ms))
 
     def jam_guest_ended(self):
         """back to your own player."""
@@ -11493,6 +12533,7 @@ class Main(QMainWindow):
             self.root.set_cover("")
             self.setWindowTitle(APP_NAME)
         self.on_position(self.player.position())
+        self.push_presence()
 
     def seek_released(self, v):
         if self.jam_guest():
@@ -11672,7 +12713,7 @@ class Main(QMainWindow):
         self.b_lyrics.active = self.page == "lyrics"
         if hasattr(self, "b_vis"):
             self.b_vis.active = self.page == "visualizer"
-        cur = self.queue[self.qi] if 0 <= self.qi < len(self.queue) else None
+        cur = self.current_track()
         self.b_lyrics.setEnabled(bool(cur and self.lyrics_for(cur)) or self.page == "lyrics")
         self.b_lyrics.setToolTip("lyrics  (ctrl+l)" if self.b_lyrics.isEnabled() else "no lyrics for this song")
         self.now_panel.dial.set_spinning(playing)
@@ -11937,6 +12978,11 @@ class Main(QMainWindow):
         self.refresh_playing()
 
     def lyrics_for(self, t):
+        if "_lyrics" in t:
+            ly = t["_lyrics"]
+            if ly and ly.get("synced"):
+                ly = dict(ly, synced=[tuple(x) for x in ly["synced"]])
+            return ly
         cache = self.__dict__.setdefault("_lyrics_cache", OrderedDict())
         p = t["path"]
         if p not in cache:
@@ -11958,7 +13004,42 @@ class Main(QMainWindow):
         if self.cfg.get("discord_enabled"):
             self.presence_timer.start()
 
+    def maybe_offer_discord(self):
+        """once: if discord is open, offer to show what you're playing on your profile."""
+        cfg = self.cfg
+        if cfg.get("discord_enabled") or cfg.get("discord_offered") or \
+                not ((cfg.get("discord_client_id") or "").strip() or DISCORD_APP_ID):
+            return
+
+        def check():
+            c = self.discord._open()
+            if c:
+                try:
+                    c[1].close()
+                except Exception:
+                    pass
+                self.ui_call.run.emit(offer)
+
+        def offer():
+            cfg["discord_offered"] = True
+            cfg.save()
+
+            def turn_on():
+                cfg["discord_enabled"] = True
+                cfg.save()
+                self.push_presence()
+                self.toast("showing what you play on discord — turn it off in settings → discord")
+            self.toast("show what you're listening to on your Discord profile?", "turn on", turn_on, ms=15000)
+        threading.Thread(target=check, daemon=True).start()
+
     def _push_presence(self):
+        if self.jam_guest() and getattr(self.jam_page, "np_state", None):
+            st, out = self.jam_page.np_state, self.jam.output
+            pos, dur = self.jam_page.jam_pos()
+            t = {"title": st["title"], "artist": st["artist"], "album": st["album"], "cover": st.get("cover_key", ""),
+                 "path": "", "duration": dur / 1000}
+            self.discord.update(t, bool(st["playing"]) and not (out is not None and out.paused), int(pos), int(dur))
+            return
         t = self.queue[self.qi] if 0 <= self.qi < len(self.queue) else None
         playing = self.player.playbackState() == QMediaPlayer.PlayingState
         self.discord.update(t, playing, self.player.position(), self.dur or int((t or {}).get("duration", 0) * 1000))

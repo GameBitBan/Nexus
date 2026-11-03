@@ -62,7 +62,8 @@ Results are cached and refresh every few days, or hit *refresh*.
 
 The people icon in the rail (`ctrl+j`). One of you **hosts**, the other **joins**:
 - **host**: *start a jam* gives you a code like `K7Q-M2X` (*copy invite* makes a message to paste in Discord). Whatever you play streams to your friends live, about a second behind, up to 4 people. You see who's listening (right-click to remove someone) and a chat.
-- **join**: type the code. Your own music pauses and you hear theirs, with the cover, song, progress, what's up next, your own volume, and the chat. The normal player bar follows along: it shows their song and how far in it is, **play/pause (or space) pauses just for you** (the others keep listening, and resuming drops you back in live), and the volume slider and mute are yours. Skipping asks the host (if they've allowed it); only the host can seek or go back. You can search their library and double-click a song to add it to their queue (the host can turn that off, and can let friends skip).
+- **join**: type the code. Your own music pauses and you hear theirs, with the cover, song, progress, what's up next, your own volume, and the chat. The normal player bar follows along: it shows their song and how far in it is, **play/pause (or space) pauses just for you** (the others keep listening, and resuming drops you back in live), and the volume slider and mute are yours. Skipping asks the host (if they've allowed it); only the host can seek or go back. You can search their library and double-click a song to add it to their queue (the host can turn that off, and can let friends skip). Lyrics, the visualizer and the record ring follow the jam too, and Discord shows what you're listening to along with them.
+- **downloading from a friend**: listeners get **⤓ song** / **⤓ album** under the cover, and can right-click any song in the host's library → *download this song* / *download the whole album*. The host chooses in the start screen whether friends can download: **ask me** (a toast + a list of requests to approve), **always** or **never**. Files come over the same encrypted connection, untouched (the original FLAC, cover art included), and land in the listener's library sorted into Artist / Album.
 
 Audio goes straight between your PCs (WebRTC, encrypted, Opus at 320 kbps — near-transparent, not lossless). To find each other, both apps swap connection details through a public ntfy.sh channel named after the code, encrypted with a key made from the code, so the relay only sees scrambled data. If both of you are behind very strict routers (e.g. carrier-grade NAT on both ends) the direct connection can fail — one of you trying a different network (a phone hotspot) usually fixes it. Hosting needs the Nexus audio engine.
 
@@ -92,6 +93,15 @@ Set it up in **settings → downloads**:
 
 ### watch folder
 Settings → downloads → watch folder: point it at e.g. `Downloads` and tick *watch it*. Any new FLAC/MP3/etc. or **zip** that lands there is sorted into your library automatically. Files that were already in the folder are left alone, and half-finished browser downloads (`.crdownload`, `.part`) are skipped until they finish.
+
+## import from Spotify, Apple Music & co.
+
+Discover → **import from Spotify…** (or settings → import). Spotify's API only allows 5 people per app now, so instead of logging in Nexus reads the exports the services already give you — on your PC, nothing gets uploaded:
+- **Spotify**: spotify.com → account → privacy settings → *download your data* → *account data*. You get a zip by email (can take a few days); pick it as-is. Brings **playlists, liked songs, followed artists and saved albums**. Any CSV from Exportify / TuneMyMusic / Soundiiz works too.
+- **Apple Music**: iTunes / Apple Music app → File → Library → *Export Library…* → pick `Library.xml` (playlists + loved songs), or the zip from privacy.apple.com.
+- **anything else**: CSV/TXT with title + artist columns (Google Takeout's YouTube Music files, etc.) and `.m3u` / `.m3u8` playlists from other players.
+
+Nexus matches every song against your library (forgiving about *Remastered*, *feat.*, accents and capitals), shows how many you already have, and makes the playlists you tick. **Get missing albums** finds the ones you don't have on Soulseek one by one (lossless if that's set), and the imported playlists fill in by themselves as the songs arrive. Followed artists feed Discover.
 
 ## discord ("Listening to Nexus")
 
@@ -206,7 +216,7 @@ Fonts: body text uses SF Pro if installed, else bundled **Inter**. Headings use 
 
 - formats: FLAC, ALAC, WAV, AIFF, WavPack, APE, DSF, OPUS, OGG, MP3, AAC
 - album art from embedded tags or `cover/folder/front.jpg|png` next to files (cached + downscaled so huge embedded art doesn't lag)
-- real quality per track: `FLAC 24/96`, `FLAC 16/44.1`, `MP3 320k`
+- real quality per track: `FLAC 24/96`, `FLAC 16/44.1`, `MP3 320k`. Lossy files (MP3, AAC, OGG, Opus) show their format in amber and say *lossy* in the tooltip and now-playing panel; search `lossy` or `lossless` (or `mp3`, `flac`) to filter
 - views: albums grid, artists, songs, queue, playlists, album page
 - hover an album → play button on the cover; click the cover to open it
 - click a song → plays that list from there (ctrl/shift-click selects instead; switch to double-click in settings → library)
