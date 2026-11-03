@@ -53,7 +53,7 @@ If the engine's packages (numpy, av, sounddevice) can't load, Nexus falls back t
 The compass in the rail (`ctrl+5`) recommends music from what you already have:
 - **your top artists**: who you play most (Nexus counts a play after 30 s, or half of a short song), then who you own the most of.
 - **artists you might like**: artists similar to several of yours, from Deezer's free public API (only artist names are sent). Each shows who it's *like*; ▶ plays a 30-second preview (your music pauses and comes back after), ⤓ searches Soulseek for them, *songs* opens their top tracks.
-- **albums you don't have yet**: newer or older albums and EPs from artists in your library that aren't in it. ⤓ searches Soulseek for that album.
+- **albums you don't have yet**: newer or older albums and EPs from artists in your library that aren't in it. **⤓ downloads it**: Nexus searches Soulseek, picks the best copy of that exact album (lossless first, skips other albums by the same artist), queues it with backups in case the first user never starts, and moves it into your library, adding the cover you saw if the download came without one. Same for the ⤓ next to a recommended artist's songs (downloads the album that song is on).
 - **rediscover**: albums from your own library you haven't played in a month or more.
 
 Results are cached and refresh every few days, or hit *refresh*.

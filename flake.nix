@@ -12,7 +12,7 @@
     in {
       packages.${system}.default = pkgs.stdenv.mkDerivation {
         pname = "nexus";
-        version = "1.12.7";
+        version = "1.13.0";
         src = ./.;
         nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook pkgs.makeWrapper ];
         buildInputs = [ pkgs.qt6.qtbase pkgs.qt6.qtwayland pkgs.qt6.qtmultimedia ];

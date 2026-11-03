@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.12.7"
+VERSION = "1.13.0"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -4173,6 +4173,61 @@ class DownloadPage(QWidget):
         na, nb = len(a["audio"]), len(b["audio"])
         return j >= 0.5 and abs(na - nb) <= max(2, int(na * 0.25))
 
+    def auto_download(self, artist, album, cover_url="", status=lambda *_a, **_k: None):
+        """find "artist album" on Soulseek, pick the best copy of that album, queue it (with backups)."""
+        c = self.client()
+        if not c.ready():
+            status("set up Soulseek first (settings → downloads)")
+            self.win.toast("set a Soulseek login in settings → downloads first", "open",
+                           lambda: self.win.go("settings", "downloads"))
+            return
+        lossless = bool(self.win.cfg.get("dl_lossless_only", True))
+        want = {t for t in self._tokens(album) if t not in NOISE_WORDS} or self._tokens(album)
+        art = {t for t in self._tokens(artist) if t not in NOISE_WORDS}
+        queries = [clean_query(f"{artist} {album}")] + broader_queries(f"{artist} {album}")
+        if len(" ".join(want)) >= 6:
+            queries.append(clean_query(album))
+        queries = list(dict.fromkeys(q for q in queries if q))[:3]
+        status("searching Soulseek…")
+
+        def fits(r):
+            have = self._tokens(r["name"]) | self._tokens(r["dir"])
+            hit = len(want & have) / max(1, len(want))
+            return hit >= 0.7, bool(art & have)
+
+        def work():
+            for q in queries:
+                res = c.search(q, int(self.win.cfg.get("dl_search_seconds", 15)) * 1000)
+                rows = group_results(res, lossless)
+                good = []
+                for r in rows:
+                    ok, has_artist = fits(r)
+                    if ok:
+                        good.append((has_artist, r))
+                if good:
+                    good.sort(key=lambda x: (not x[0], -x[1]["score"]))
+                    return [r for _a, r in good], q, len(rows)
+            return [], None, 0
+
+        def done(res, err):
+            if err:
+                status(f"couldn't search: {err}")
+                return
+            cands, q, n = res
+            if not cands:
+                msg = ("no lossless copy on Soulseek right now" if lossless else "not on Soulseek right now")
+                status(msg)
+                self.win.toast(f"“{album}”: {msg}", "search myself",
+                               lambda: (self.win.go("download"), self.q.setText(f"{artist} {album}"), self.search()))
+                return
+            best = cands[0]
+            job = {"name": f"{artist} - {album}", "tried": [], "alts": cands[1:7], "cover_url": cover_url}
+            self.download(best, job=job)
+            status(f"downloading from {best['user']} · {best['fmt']}", True)
+            self.win.toast(f"downloading “{album}” ({best['fmt']}) — it lands in your library when done", "show",
+                           lambda: self.win.go("download"))
+        self.win.bg(work, done)
+
     def alternatives(self, row, rows):
         return [r for r in rows if r["user"] != row["user"] and self.similar(row, r)][:6]
 
@@ -4297,13 +4352,21 @@ class DownloadPage(QWidget):
             return
         direct = [(u, f) for u, f in todo if f.get("localPath") and os.path.exists(f["localPath"])]
         if direct:                                   # built-in soulseek: we know exactly where each file is
+            groups = {}
             for u, f in direct:
                 self.imported.add((u, f["filename"]))
                 self.pending.pop((u, f["filename"]), None)
-            audio = [f["localPath"] for _u, f in direct if os.path.splitext(f["localPath"])[1].lower() in AUDIO_EXT]
-            if audio:
-                self.win.importer.import_files(audio, move=True)
-                self.status.setText(self.win.L(f"imported {len(audio)} files into your library"))
+                if os.path.splitext(f["localPath"])[1].lower() in AUDIO_EXT:
+                    groups.setdefault(self.job_key(u, remote_split(f["filename"])[0]), []).append(f["localPath"])
+            n = 0
+            for key, audio in groups.items():
+                dests = self.win.importer.import_files(audio, move=True)
+                n += len(dests)
+                cover = (self.jobs.get(key) or {}).get("cover_url")
+                if cover and dests:
+                    self.add_cover(cover, {str(Path(d).parent) for d in dests})
+            if n:
+                self.status.setText(self.win.L(f"imported {n} files into your library"))
                 self.render_downloads()
             self.save_pending()
             return
@@ -4403,6 +4466,20 @@ class DownloadPage(QWidget):
         base = os.path.splitext(remote_split(fn)[1])[0].lower()
         base = re.sub(r"^[\d\s._-]+", "", base)
         return re.sub(r"[^a-z0-9]+", "", base)
+
+    def add_cover(self, url, folders):
+        """albums from Discover: if the download came without a cover, save the one we showed you."""
+        need = [d for d in folders if Path(d).is_dir() and not any(
+            p.suffix.lower() in IMG_EXT and p.stem.lower() in COVER_NAMES for p in Path(d).iterdir())]
+        if not need:
+            return
+
+        def work():
+            data = fetch_bytes(url, 15_000_000)
+            for d in need:
+                (Path(d) / "cover.jpg").write_bytes(data)
+            return len(need)
+        self.win.bg(work, lambda n, e: None if e else self.win.importer.rescan_timer.start())
 
     def retry_failed(self, key):
         user, _folder = key.split("\x00", 1)
@@ -7826,6 +7903,7 @@ class Discover:
                          "top": [{"title": x.get("title", ""), "preview": x.get("preview", ""), "tid": x.get("id"),
                                   "album": (x.get("album") or {}).get("title", ""),
                                   "cover": (x.get("album") or {}).get("cover_medium", ""),
+                                  "cover_big": (x.get("album") or {}).get("cover_xl", ""),
                                   "duration": x.get("duration") or 0} for x in top]})
             progress(f"getting {r.get('name')}'s top songs…", len(recs), 18)
         missing = []
@@ -7845,6 +7923,7 @@ class Discover:
                 seen.add(n)
                 missing.append({"artist": s["name"], "title": a.get("title", ""), "year": (a.get("release_date") or "")[:4],
                                 "type": a.get("record_type", "album"), "cover": a.get("cover_medium", ""),
+                                "cover_big": a.get("cover_xl") or a.get("cover_big") or "",
                                 "have": s["albums"]})
                 got += 1
                 if got >= 3:
@@ -8025,8 +8104,8 @@ class DiscoverPage(QWidget):
         head.addWidget(self.b_refresh, 0, Qt.AlignBottom)
         v.addLayout(head)
         note = QLabel("Based on the artists in your library and what you play most. Similar artists come from Deezer "
-                      "(only artist names are sent). Hit ▶ for a 30-second preview, ⤓ to search Soulseek for it.",
-                      objectName="time")
+                      "(only artist names are sent). ▶ plays a 30-second preview. ⤓ on an album finds it on Soulseek "
+                      "and downloads it straight into your library, cover included.", objectName="time")
         note.setWordWrap(True)
         v.addWidget(note)
         self.sections = {}
@@ -8152,6 +8231,39 @@ class DiscoverPage(QWidget):
                 pass
         self.play_btns = alive
 
+    @staticmethod
+    def big_cover(item):
+        u = item.get("cover_big") or item.get("cover") or ""
+        return re.sub(r"/\d+x\d+-", "/1000x1000-", u) if "dzcdn" in u else u
+
+    def get_btn(self, artist, album, cover, status_label=None):
+        """⤓ that actually downloads: finds the album on Soulseek, picks the best copy, queues it."""
+        b = QPushButton("⤓", objectName="chip")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip(f"download “{album}” from Soulseek into your library")
+        key = f"{artist}|{album}".lower()
+        state = self.win.__dict__.setdefault("_disc_dl", {})
+
+        def show(text, done=False):
+            state[key] = text
+            try:
+                if status_label is not None:
+                    status_label.setText(text)
+                    status_label.setToolTip(text)
+                b.setText("✓" if done else "⤓")
+                b.setEnabled(not done)
+            except RuntimeError:
+                pass
+        if key in state:
+            QTimer.singleShot(0, lambda: show(state[key], state[key].startswith("downloading")))
+
+        def go():
+            b.setEnabled(False)
+            b.setText("…")
+            self.win.download_page.auto_download(artist, album, cover, show)
+        b.clicked.connect(go)
+        return b
+
     def find_btn(self, query, tip="search Soulseek"):
         b = QPushButton("⤓", objectName="chip")
         b.setCursor(Qt.PointingHandCursor)
@@ -8239,8 +8351,11 @@ class DiscoverPage(QWidget):
                 Qt.ElideRight, 150))
             l.addWidget(sub)
             row = QHBoxLayout()
-            row.addWidget(self.find_btn(f"{a['artist']} {a['title']}", "find this album on Soulseek"))
-            row.addStretch()
+            row.setSpacing(6)
+            st = QLabel(objectName="time")
+            st.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            row.addWidget(self.get_btn(a["artist"], a["title"], self.big_cover(a), st))
+            row.addWidget(st, 1)
             l.addLayout(row)
             self.sections["missing"][1].layout().addWidget(card)
         if not d.get("missing"):
@@ -8299,7 +8414,10 @@ class DiscoverPage(QWidget):
             row.addWidget(al, 2)
             row.addWidget(QLabel(fmt_time(t.get("duration") or 0), objectName="time"))
             row.addWidget(self.play_btn(t.get("preview", ""), f"{r['name']} — {t['title']}", t.get("tid")))
-            row.addWidget(self.find_btn(f"{r['name']} {t.get('album') or t['title']}"))
+            if t.get("album"):
+                row.addWidget(self.get_btn(r["name"], t["album"], self.big_cover(t)))
+            else:
+                row.addWidget(self.find_btn(f"{r['name']} {t['title']}"))
             lay.addLayout(row)
         box.show()
         self.refresh_play_buttons()
