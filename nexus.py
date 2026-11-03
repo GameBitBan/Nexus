@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.18.0"
+VERSION = "1.18.1"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 DISCORD_APP_ID = "1566983013445931018"  # Nexus's own discord app: lets anyone show what they're playing without making one
 
@@ -3423,6 +3423,52 @@ def local_ip():
         return "this PC"
 
 
+_VPN_WORDS = (("nordlynx", "NordVPN"), ("nordvpn", "NordVPN"), ("proton", "Proton VPN"), ("mullvad", "Mullvad"),
+              ("surfshark", "Surfshark"), ("expressvpn", "ExpressVPN"), ("windscribe", "Windscribe"),
+              ("cyberghost", "CyberGhost"), ("private internet access", "PIA"), ("pia", "PIA"),
+              ("tunnelbear", "TunnelBear"), ("hotspot shield", "Hotspot Shield"), ("ipvanish", "IPVanish"),
+              ("cloudflare warp", "Cloudflare WARP"), ("warp", "Cloudflare WARP"), ("airvpn", "AirVPN"),
+              ("wireguard", "a WireGuard VPN"), ("wintun", "a VPN"), ("tap-windows", "an OpenVPN VPN"),
+              ("openvpn", "an OpenVPN VPN"), ("tap-", "a VPN"))
+
+
+def vpn_active():
+    """name of a VPN this PC is connected through right now, or "" (best effort, never raises)."""
+    try:
+        if sys.platform.startswith("win"):
+            r = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                "Get-NetAdapter | Where-Object Status -eq 'Up' | "
+                                "ForEach-Object { $_.Name + '|' + $_.InterfaceDescription }"],
+                               capture_output=True, text=True, timeout=12, creationflags=0x08000000)
+            names = [ln.lower() for ln in r.stdout.splitlines() if ln.strip()]
+        else:
+            names = []
+            for n in os.listdir("/sys/class/net"):
+                try:
+                    up = Path(f"/sys/class/net/{n}/operstate").read_text().strip() in ("up", "unknown")
+                except OSError:
+                    up = False
+                if up and re.match(r"(wg|tun|proton|nordlynx|mullvad|pvpn|ipv6leakintrf|cloudflare)", n):
+                    names.append(n.lower())
+        for ln in names:
+            for word, nice in _VPN_WORDS:
+                if word in ln:
+                    return nice
+        if not sys.platform.startswith("win") and names:
+            return "a VPN"
+    except Exception:
+        pass
+    return ""
+
+
+def vpn_advice(name):
+    exe = os.path.basename(sys.executable) if getattr(sys, "frozen", False) else "pythonw.exe and python.exe"
+    return (f"you're connected through {name}. VPNs stop other Soulseek users from reaching you, so a lot of "
+            f"downloads never start. fix: turn the VPN off while downloading, or exclude Nexus from it (split "
+            f"tunneling → add {exe}), or use a VPN server with port forwarding and put that port in settings → "
+            f"downloads. Internet Archive and Jamendo downloads work fine through a VPN")
+
+
 def port_check(port):
     """asks the Soulseek website whether other users can reach this PC on `port` → "open" / "closed" / None."""
     try:
@@ -4040,6 +4086,9 @@ class SoulseekNative:
         fw = firewall_ok()
         up = upnp_status(self.log_path())
         self.log.info("diagnose: port %s %s, firewall rule %s, upnp %s", port, reach, fw, up)
+        vpn = vpn_active()
+        if vpn and reach != "open":
+            return vpn_advice(vpn)
         if reach == "closed":
             if fw is False:
                 return (f"port {port} is closed and the Windows Firewall rule is missing — use “fix firewall” on "
@@ -4477,6 +4526,19 @@ class DownloadPage(QWidget):
         fwl.addWidget(win.tbtn("fix firewall", self.fix_firewall, "pillPrimary"))
         self.fw.hide()
         v.addWidget(self.fw)
+        self.vpnw = QWidget(objectName="onlinebox")
+        self.vpnw.setAttribute(Qt.WA_StyledBackground, True)
+        vpl = QHBoxLayout(self.vpnw)
+        vpl.setContentsMargins(14, 6, 8, 6)
+        self.vpn_text = QLabel(objectName="dim")
+        self.vpn_text.setWordWrap(True)
+        vpl.addWidget(self.vpn_text, 1)
+        vpl.addWidget(win.tbtn("use Internet Archive", lambda: self.src.setCurrentIndex(self.src.findData("archive")),
+                               "pill"))
+        vpl.addWidget(win.tbtn("hide", lambda: (self.vpnw.hide(), setattr(self, "vpn_hidden", True)), "pill"))
+        self.vpnw.hide()
+        self.vpn_hidden = False
+        v.addWidget(self.vpnw)
         self.dl = QListWidget(objectName="dllist")
         self.dl.setContextMenuPolicy(Qt.CustomContextMenu)
         self.dl.customContextMenuRequested.connect(self.dl_menu)
@@ -4575,6 +4637,8 @@ class DownloadPage(QWidget):
         self.tree.setHeaderLabels(["", "ALBUM / FOLDER", "FORMAT", "TRACKS", "SIZE", "USER", "SPEED", ""]
                                   if src == "soulseek" else ["", "ALBUM", "FORMAT", "TRACKS", "SIZE", "WHERE", "YEAR", ""])
         self.conn.setVisible(src == "soulseek")
+        if hasattr(self, "vpnw"):
+            self.check_vpn()
         self.tree.clear()
         self.status.setText(L({"soulseek": "",
                                "archive": "free and legal: public-domain recordings, netlabels and the Live Music "
@@ -5184,9 +5248,23 @@ class DownloadPage(QWidget):
 
     # ---- windows firewall
     def check_firewall(self):
+        self.check_vpn()
         if not sys.platform.startswith("win"):
             return
         self.win.bg(firewall_ok, lambda ok, _e: self.fw.setVisible(ok is False))
+
+    def check_vpn(self):
+        if self.vpn_hidden or self.source() != "soulseek":
+            self.vpnw.hide()
+            return
+
+        def show(name, _e):
+            if name and not self.vpn_hidden:
+                self.vpn_text.setText(self.win.L(vpn_advice(name)))
+                self.vpnw.show()
+            else:
+                self.vpnw.hide()
+        self.win.bg(vpn_active, show)
 
     def fix_firewall(self):
         port = int(self.win.cfg.get("slsk_port", 2234))
@@ -11559,10 +11637,10 @@ class Settings(QWidget):
             port = int(self.win.cfg.get("slsk_port", 2234))
             self.test_result.setText(f"testing port {port}…")
             def work():
-                return port_check(port), firewall_ok(), upnp_status(self.win.soulseek.log_path())
+                return port_check(port), firewall_ok(), upnp_status(self.win.soulseek.log_path()), vpn_active()
 
             def show(res, _e):
-                r, fw, up = res or (None, None, None)
+                r, fw, up, vpn = res or (None, None, None, "")
                 fw_t = {True: "firewall rule: ok", False: "firewall rule: MISSING (allow through firewall)",
                         None: ""}[fw]
                 up_t = {"mapped": "router UPnP: port mapped", "failed": "router UPnP: refused",
@@ -11570,7 +11648,8 @@ class Settings(QWidget):
                 head = {"open": f"port {port} is OPEN — other users can reach you",
                         "closed": f"port {port} is CLOSED from the internet (connect to Soulseek first, then test)"}\
                     .get(r, "couldn't run the port test (no internet?)")
-                self.test_result.setText("  ·  ".join(x for x in (head, fw_t, up_t) if x))
+                self.test_result.setText("  ·  ".join(x for x in (head, fw_t, up_t) if x)
+                                         + (f"\n{vpn_advice(vpn)}" if vpn and r != "open" else ""))
             self.win.bg(work, show)
         pt.clicked.connect(test_port)
         hrow.addWidget(pt)
