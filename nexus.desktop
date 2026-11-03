@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Nexus
+GenericName=Music Player
+Comment=Local lossless music player
+Exec=nexus
+Icon=nexus
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/flac;audio/x-flac;audio/mpeg;audio/ogg;audio/x-wav;
+StartupWMClass=nexus

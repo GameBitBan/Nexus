@@ -1,0 +1,46 @@
+# push a tag like v1.10.1 (or run it by hand) → builds nexus.zip and publishes a GitHub Release.
+# Nexus checks this repo's latest release for updates; install.ps1 installs from it.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: check version
+        id: v
+        run: |
+          VERSION=$(grep -m1 '^VERSION = ' nexus.py | cut -d'"' -f2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "$VERSION" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} doesn't match VERSION = \"$VERSION\" in nexus.py"; exit 1
+          fi
+          python3 -m py_compile nexus.py Nexus.pyw "Install Nexus.pyw"
+
+      - name: build nexus.zip
+        run: |
+          mkdir -p dist/Nexus
+          cp -r nexus.py Nexus.pyw "Install Nexus.pyw" install.ps1 requirements.txt README.md LICENSE \
+                flake.nix nexus.desktop run.sh build_exe.py make_icon.py make_skins.py fonts icons skins dist/Nexus/
+          # releases know where they came from, so the app updates from this repo
+          sed -i "s|^GITHUB_REPO = \"\"|GITHUB_REPO = \"${GITHUB_REPOSITORY}\"|" dist/Nexus/nexus.py
+          find dist -name __pycache__ -prune -exec rm -rf {} +
+          (cd dist && zip -qr nexus.zip Nexus)
+          sha256sum dist/nexus.zip
+
+      - name: publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: Nexus ${{ steps.v.outputs.version }}
+          files: dist/nexus.zip
+          generate_release_notes: true
