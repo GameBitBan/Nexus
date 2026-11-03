@@ -78,6 +78,8 @@ Set it up in **settings → downloads**:
 
 **When a download won't start:** Soulseek users can be offline, busy or have long queues. Each download shows what it's waiting on (e.g. *waiting in their queue (#37)*). If an album hasn't started after 5 minutes, or every file failed, Nexus moves it to another user who has the same album — from your search, or with a fresh search — and tells you. Right-click a download for *try another user*, *retry failed files*, *cancel* or *search for it again*. The timing (or turning it off) is in settings → downloads.
 
+**Searching:** Soulseek only returns files whose names contain *every* word you type, so long searches often find nothing. Nexus tidies the search (dashes, brackets) and, if nothing comes back, retries without words like *deluxe / edition / remastered*, then with just the first few words. If there are still no results it checks why: whether other users can reach you (it asks slsknet.org's port test) and whether Windows Firewall is set up, and tells you which one it is. *Test port* in settings → downloads runs the same check.
+
 **Windows Firewall:** other users have to be able to connect to you, or many downloads never start. The installer sets that up (one *Yes* on the admin prompt); if it's missing, the Download page shows a **fix firewall** button. It only opens Nexus's two Soulseek ports (2234/2235 by default) for Python. If Windows ever pops up *"Windows Defender Firewall has blocked some features of Python"*, tick **Private networks** and click **Allow**.
 
 ### watch folder

@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.12.4"
+VERSION = "1.12.5"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -3232,6 +3232,43 @@ def firewall_ok():
         return None
 
 
+def port_check(port):
+    """asks the Soulseek website whether other users can reach this PC on `port` → "open" / "closed" / None."""
+    try:
+        req = urllib.request.Request(f"http://www.slsknet.org/porttest.php?port={int(port)}",
+                                     headers={"User-Agent": f"Nexus/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            text = r.read(20000).decode("utf-8", "replace")
+    except Exception:
+        return None
+    m = re.search(r"Port:\s*\d+/tcp\s+(OPEN|CLOSED)", text, re.I)
+    return m.group(1).lower() if m else None
+
+
+NOISE_WORDS = {"deluxe", "edition", "remaster", "remastered", "version", "explicit", "expanded", "anniversary",
+               "bonus", "tracks", "album", "ep", "lp", "cd", "flac", "mp3", "the", "official", "full"}
+
+
+def clean_query(text):
+    """tidy what people type: lone dashes ("Artist - Album") and punctuation. "-word" (exclude) is kept."""
+    t = re.sub(r"(^|\s)[-–—]+(?=\s|$)", " ", text)          # lone dashes like "Artist - Album"
+    t = re.sub(r"[\"“”(){}\[\]:;,!?.]+", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def broader_queries(text):
+    """fallbacks when a search finds nothing: drop words like deluxe/edition, then keep the first few words."""
+    q = clean_query(text)
+    words = q.split()
+    out = []
+    core = [w for w in words if w.lower() not in NOISE_WORDS]
+    if core and core != words:
+        out.append(" ".join(core))
+    if len(core) > 3:
+        out.append(" ".join(core[:3]))
+    return [x for x in dict.fromkeys(out) if x and x.lower() != q.lower()]
+
+
 def firewall_fix(port):
     """one admin prompt: (re)creates inbound allow rules for python on just the soulseek ports."""
     import ctypes
@@ -3721,10 +3758,21 @@ class SoulseekNative:
         if not ports[0]:
             return (f"Nexus couldn't open its listening port {port} (something else may be using it) — "
                     f"pick another port in settings → downloads")
-        if sys.platform.startswith("win"):
-            return (f"nobody answered. most likely Windows Firewall is blocking Python, so peers can't reach you: "
-                    f"settings → downloads → “allow through firewall”, or forward port {port} on your router")
-        return f"nobody answered — check that port {port} is reachable (firewall / router port forward)"
+        reach = port_check(port)
+        fw = firewall_ok()
+        self.log.info("diagnose: port %s %s, firewall rule %s", port, reach, fw)
+        if reach == "closed":
+            if fw is False:
+                return (f"other users can't reach you (port {port} is closed) — Windows Firewall isn't set up: "
+                        f"use “fix firewall” on this page")
+            return (f"other users can't reach you: port {port} is closed. Windows Firewall is fine"
+                    f"{'' if fw else ' (or not in use)'}, so it's your router — turn on UPnP in its settings, "
+                    f"or forward TCP ports {port}-{port + 1} to this PC. Results from people who can reach out to "
+                    f"you will still come in")
+        if fw is False:
+            return "Windows Firewall isn't set up for Nexus yet — use “fix firewall” on this page, then search again"
+        return (f"port {port} is open, so it's the search: nobody shares files whose names contain every word of "
+                f"“{query}”. try fewer words (artist + album), or untick lossless only")
 
     def downloads(self):
         if self.state != "online":
@@ -3902,10 +3950,12 @@ class DownloadPage(QWidget):
             self.show_rows(group_results(self.raw, on))
 
     # ---- search
-    def search(self):
-        text = self.q.text().strip()
+    def search(self, text=None, fallbacks=None, original=None):
+        text = clean_query(self.q.text() if text is None else text)
         if not text or self.busy:
             return
+        if fallbacks is None:
+            fallbacks, original = broader_queries(text), text
         c = self.client()
         if not c.ready():
             self.status.setText(self.win.L("set up your soulseek login first: settings → downloads"))
@@ -3928,11 +3978,20 @@ class DownloadPage(QWidget):
             if err:
                 self.status.setText(str(err))
                 return
+            if not res and fallbacks:
+                nxt = fallbacks[0]
+                self.status.setText(self.win.L(f"nothing for “{text}” — trying “{nxt}”…"))
+                QTimer.singleShot(0, lambda: self.search(nxt, fallbacks[1:], original))
+                return
             self.raw = res
             rows = group_results(res, self.lossless.isChecked())
             self.show_rows(rows)
+            if res and text != original:
+                self.status.setText(self.status.text() + self.win.L(f" · nothing matched “{original}”, "
+                                                                      f"these are for “{text}”"))
             if not res and isinstance(c, SoulseekNative):
-                self.win.bg(lambda: c.diagnose(text),
+                self.status.setText(self.win.L(f"0 results for “{original}” — checking why…"))
+                self.win.bg(lambda: c.diagnose(original),
                             lambda why, e: self.status.setText(self.win.L("0 results — ") + (why or str(e))))
             elif res and not rows:
                 self.status.setText(self.win.L(f"{len(res)} users answered, but none had lossless folders — "
@@ -8450,6 +8509,19 @@ class Settings(QWidget):
             fw.setToolTip("adds a Windows Firewall rule for Python so other Soulseek users can reach you (asks for admin)")
             fw.clicked.connect(self.allow_firewall)
             hrow.addWidget(fw)
+        pt = QPushButton("test port")
+        pt.setToolTip("asks slsknet.org whether other Soulseek users can reach this PC")
+
+        def test_port():
+            port = int(self.win.cfg.get("slsk_port", 2234))
+            self.test_result.setText(f"testing port {port}…")
+            self.win.bg(lambda: port_check(port), lambda r, _e: self.test_result.setText(
+                {"open": f"port {port} is open — other users can reach you",
+                 "closed": f"port {port} is closed — connect to Soulseek first (search once), then test again; if "
+                           f"still closed, turn on UPnP in your router or forward TCP {port}-{port + 1} to this PC"}
+                .get(r, "couldn't run the port test (no internet?)")))
+        pt.clicked.connect(test_port)
+        hrow.addWidget(pt)
         lg = QPushButton("open soulseek log")
         lg.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(win.soulseek.log_path())))
                            if win.soulseek.log_path().exists() else self.test_result.setText("no log yet — connect first"))
