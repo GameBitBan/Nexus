@@ -76,6 +76,10 @@ Set it up in **settings → downloads**:
 - **listening port / UPnP**: UPnP opens the port on your router automatically. If downloads from some people never start, forward that port (default 2234, and 2235 for obfuscated connections) manually.
 - Finished downloads are tagged, moved into `<music>/<Album Artist>/<Album>/` with their cover, and show up in your library.
 
+**When a download won't start:** Soulseek users can be offline, busy or have long queues. Each download shows what it's waiting on (e.g. *waiting in their queue (#37)*). If an album hasn't started after 5 minutes, or every file failed, Nexus moves it to another user who has the same album — from your search, or with a fresh search — and tells you. Right-click a download for *try another user*, *retry failed files*, *cancel* or *search for it again*. The timing (or turning it off) is in settings → downloads.
+
+**Windows Firewall:** other users have to be able to connect to you, or many downloads never start. The installer sets that up (one *Yes* on the admin prompt); if it's missing, the Download page shows a **fix firewall** button. It only opens Nexus's two Soulseek ports (2234/2235 by default) for Python. If Windows ever pops up *"Windows Defender Firewall has blocked some features of Python"*, tick **Private networks** and click **Allow**.
+
 ### watch folder
 Settings → downloads → watch folder: point it at e.g. `Downloads` and tick *watch it*. Any new FLAC/MP3/etc. or **zip** that lands there is sorted into your library automatically. Files that were already in the folder are left alone, and half-finished browser downloads (`.crdownload`, `.part`) are skipped until they finish.
 

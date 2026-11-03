@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.11.0"
+VERSION = "1.12.0"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -189,6 +189,8 @@ DEFAULTS = {
     "slsk_upload_slots": 2,
     "slsk_download_dir": "",           # temp landing spot before import (default: inside Nexus's data folder)
     "dl_lossless_only": True,
+    "dl_auto_switch": True,            # a download that hasn't started after a while moves to another user
+    "dl_stall_minutes": 5,
     "ambient_background": True,        # blurred album-art glow behind the ui
     "ambient_strength": 45,
     "dial_visualizer": True,           # the record's dot ring dances to the music
@@ -3144,6 +3146,7 @@ class LyricsPage(QWidget):
 
 
 # ------------------------------------------------------------------ soulseek downloads + importer
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -3152,6 +3155,38 @@ import uuid
 LOSSLESS_EXT = {".flac", ".wav", ".aiff", ".aif", ".wv", ".ape", ".alac", ".dsf"}
 class DownloadError(Exception):
     pass
+
+
+FIREWALL_RULE = "Nexus Soulseek"
+
+
+def firewall_ok():
+    """windows: is our inbound rule there? (None = can't tell / not windows)"""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        r = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", f"name={FIREWALL_RULE}"],
+                           capture_output=True, text=True, timeout=8, creationflags=0x08000000)
+        return r.returncode == 0 and FIREWALL_RULE in (r.stdout or "")
+    except Exception:
+        return None
+
+
+def firewall_fix(port):
+    """one admin prompt: (re)creates inbound allow rules for python on just the soulseek ports."""
+    import ctypes
+    exe_dir = Path(sys.executable).parent
+    progs = [str(p) for p in dict.fromkeys((exe_dir / "pythonw.exe", exe_dir / "python.exe", Path(sys.executable)))
+             if Path(p).exists()]
+    ports = f"{port},{port + 1}"
+    cmds = [f'netsh advfirewall firewall delete rule name="{FIREWALL_RULE}"']
+    for prog in progs:
+        cmds.append(f'netsh advfirewall firewall add rule name="{FIREWALL_RULE}" dir=in action=allow '
+                    f'program="{prog}" protocol=TCP localport={ports} enable=yes profile=any')
+    for i in range(1, 4):                                   # older Nexus versions made these broader rules
+        cmds.append(f'netsh advfirewall firewall delete rule name="Nexus Soulseek {i}"')
+    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", "/c " + " & ".join(cmds), None, 0)
+    return rc > 32
 
 
 def remote_split(path):
@@ -3672,6 +3707,7 @@ class DownloadPage(QWidget):
         st = win.__dict__.setdefault("dl_state", {"pending": {}, "imported": set()})
         self.pending = st["pending"]            # (user, remote filename) → {"size", "album"}
         self.imported = st["imported"]
+        self.jobs = st.setdefault("jobs", {})  # "user\0folder" → {name, user, dir, alts, tried, started}
         self.load_pending()
         self.transfers = []
         v = QVBoxLayout(self)
@@ -3721,7 +3757,21 @@ class DownloadPage(QWidget):
         dh.addStretch()
         dh.addWidget(win.tbtn("clear finished", self.clear_finished, "pill"))
         v.addLayout(dh)
+        self.fw = QWidget(objectName="onlinebox")
+        self.fw.setAttribute(Qt.WA_StyledBackground, True)
+        fwl = QHBoxLayout(self.fw)
+        fwl.setContentsMargins(14, 6, 8, 6)
+        fwt = QLabel("Windows Firewall isn't letting other Soulseek users connect to you, so some downloads never "
+                     "start. One admin prompt fixes it (only Nexus's download ports are opened).", objectName="dim")
+        fwt.setWordWrap(True)
+        fwl.addWidget(fwt, 1)
+        fwl.addWidget(win.tbtn("fix firewall", self.fix_firewall, "pillPrimary"))
+        self.fw.hide()
+        v.addWidget(self.fw)
         self.dl = QListWidget(objectName="dllist")
+        self.dl.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.dl.customContextMenuRequested.connect(self.dl_menu)
+        self.dl.setToolTip("right-click a download for more")
         self.dl.setMaximumHeight(210)
         v.addWidget(self.dl, 1)
         self.timer = QTimer(self)
@@ -3735,14 +3785,25 @@ class DownloadPage(QWidget):
 
     def load_pending(self):
         try:
-            for user, fn, info in json.loads(self.pending_file().read_text("utf-8")):
-                self.pending.setdefault((user, fn), info)
+            d = json.loads(self.pending_file().read_text("utf-8"))
         except Exception:
-            pass
+            return
+        if isinstance(d, list):                       # older format: just the pending list
+            d = {"pending": d}
+        for user, fn, info in d.get("pending") or []:
+            self.pending.setdefault((user, fn), info)
+        for user, fn in d.get("imported") or []:
+            self.imported.add((user, fn))
+        for k, j in (d.get("jobs") or {}).items():
+            j["started"] = _time.time()                 # fresh clock after a restart: peers need a moment again
+            self.jobs.setdefault(k, j)
 
     def save_pending(self):
         try:
-            self.pending_file().write_text(json.dumps([[u, f, i] for (u, f), i in self.pending.items()]), "utf-8")
+            imp = list(self.imported)[-4000:]
+            self.pending_file().write_text(json.dumps({
+                "pending": [[u, f, i] for (u, f), i in self.pending.items()],
+                "imported": [[u, f] for u, f in imp], "jobs": self.jobs}), "utf-8")
         except Exception:
             pass
 
@@ -3856,10 +3917,39 @@ class DownloadPage(QWidget):
                 self.download(r, [f])
 
     # ---- downloading
-    def download(self, row, files=None):
+    @staticmethod
+    def _tokens(name):
+        name = re.sub(r"[\(\[][^)\]]*(flac|mp3|web|cd|vinyl|24|16|bit|khz|lossless|320|v0)[^)\]]*[\)\]]", " ",
+                      str(name).lower())
+        return {t for t in re.findall(r"[a-z0-9$]+", name) if len(t) > 1 and t not in ("the", "and", "flac", "mp3")}
+
+    def similar(self, a, b):
+        ta, tb = self._tokens(a["name"]), self._tokens(b["name"])
+        if not ta or not tb:
+            return False
+        j = len(ta & tb) / len(ta | tb)
+        na, nb = len(a["audio"]), len(b["audio"])
+        return j >= 0.5 and abs(na - nb) <= max(2, int(na * 0.25))
+
+    def alternatives(self, row, rows):
+        return [r for r in rows if r["user"] != row["user"] and self.similar(row, r)][:6]
+
+    @staticmethod
+    def job_key(user, folder):
+        return f"{user}\x00{folder.replace('/', chr(92))}"
+
+    def download(self, row, files=None, job=None):
         files = files or (row["audio"] + row["images"])
         c = self.client()
         self.status.setText(self.win.L(f"queueing {len(files)} files from {row['user']}…"))
+        key = self.job_key(row["user"], row["dir"])
+        if job is None:
+            job = {"name": row["name"], "tried": [], "alts": self.alternatives(row, self.rows)}
+        job.update(user=row["user"], dir=row["dir"], started=_time.time(), auto=bool(files and len(files) > 1))
+        if row["user"] not in job["tried"]:
+            job["tried"].append(row["user"])
+        job["alts"] = [a for a in job.get("alts", []) if a["user"] not in job["tried"]]
+        self.jobs[key] = job
 
         def done(_res, err):
             if err:
@@ -3888,6 +3978,7 @@ class DownloadPage(QWidget):
             self.transfers = res or []
             self.render_downloads()
             self.import_finished()
+            self.check_stalls()
             live = {(u.get("username"), f.get("filename")): f.get("state") or ""
                     for u in self.transfers for d in u.get("directories", []) for f in d.get("files", [])}
             online = self.win.soulseek.state == "online"
@@ -3897,6 +3988,10 @@ class DownloadPage(QWidget):
                 for k in gone:
                     self.pending.pop(k, None)
                 self.save_pending()
+            for k in list(self.jobs):
+                fs = self.folder_files(k)
+                if online and fs and all("Succeeded" in (f.get("state") or "") for f in fs):
+                    self.jobs.pop(k, None)
             active = any("Completed" not in (f.get("state") or "")
                          for u in self.transfers for d in u.get("directories", []) for f in d.get("files", []))
             if not active and not self.pending:
@@ -3915,16 +4010,36 @@ class DownloadPage(QWidget):
                 ok = sum(1 for f in fs if "Succeeded" in (f.get("state") or ""))
                 bad = sum(1 for f in fs if "Completed" in (f.get("state") or "") and "Succeeded" not in f["state"])
                 queued = sum(1 for f in fs if "Queued" in (f.get("state") or ""))
-                imp = sum(1 for f in fs if (u.get("username"), f.get("filename")) in self.imported)
+                imp = sum(1 for f in fs if (u.get("username"), f.get("filename")) in self.imported
+                          or ("Succeeded" in (f.get("state") or "") and not (f.get("localPath") and
+                                                                             os.path.exists(f["localPath"]))))
                 pct = int(got * 100 / total)
                 bar_n = 24
                 filled = int(bar_n * pct / 100)
                 bar = "●" * filled + "·" * (bar_n - filled)
-                state = (f"imported {imp}/{len(fs)}" if imp else "done" if ok == len(fs) else
-                         f"{bad} failed" if bad and ok + bad == len(fs) else
-                         f"queued ({queued})" if queued and not got else f"{pct}%")
+                key = self.job_key(u.get("username", ""), d.get("directory", ""))
+                job = self.jobs.get(key) or {}
+                spots = [f.get("placeInQueue") for f in fs if f.get("placeInQueue")]
+                remote = any("Remotely" in (f.get("state") or "") for f in fs)
+                if imp and imp >= ok:
+                    state = f"in your library {imp}/{len(fs)}" if imp == len(fs) else f"imported {imp}/{len(fs)}"
+                elif ok == len(fs):
+                    state = "done"
+                elif bad and ok + bad == len(fs):
+                    reason = next((f.get("failReason") for f in fs if f.get("failReason")), "")
+                    state = f"{bad} failed" + (f" ({reason})" if reason else "") + " — right-click → try another user"
+                elif queued and not got:
+                    state = (f"waiting in their queue (#{min(spots)})" if spots else
+                             "waiting for the user to start sending" if remote else f"queued ({queued})")
+                    left = self.stall_left(job)
+                    if left is not None:
+                        state += f" · tries another user in {left} min" if left > 0 else " · trying another user…"
+                else:
+                    state = f"{pct}%" + (f" · {bad} failed" if bad else "")
                 name = remote_split(d.get("directory", ""))[1] or d.get("directory", "")
-                self.dl.addItem(f"{bar}   {name}  ·  {u.get('username')}  ·  {ok}/{len(fs)}  ·  {state}")
+                it = QListWidgetItem(f"{bar}   {name}  ·  {u.get('username')}  ·  {ok}/{len(fs)}  ·  {state}")
+                it.setData(Qt.UserRole, key)
+                self.dl.addItem(it)
 
     def import_finished(self):
         done = [(u.get("username"), f) for u in self.transfers for d in u.get("directories", [])
@@ -3952,6 +4067,172 @@ class DownloadPage(QWidget):
             return
 
 
+    # ---- when a download won't start: move it to someone else
+    def stall_left(self, job):
+        if not job or not self.win.cfg.get("dl_auto_switch", True) or not job.get("auto", True):
+            return None
+        mins = max(1, int(self.win.cfg.get("dl_stall_minutes", 5)))
+        return max(0, int(math.ceil((job.get("started", _time.time()) + mins * 60 - _time.time()) / 60)))
+
+    def folder_files(self, key):
+        user, folder = key.split("\x00", 1)
+        for u in self.transfers:
+            if u.get("username") != user:
+                continue
+            for d in u.get("directories", []):
+                if d.get("directory", "").replace("/", "\\") == folder:
+                    return d.get("files", [])
+        return []
+
+    def check_stalls(self):
+        if not self.win.cfg.get("dl_auto_switch", True) or getattr(self, "_switching", False):
+            return
+        mins = max(1, int(self.win.cfg.get("dl_stall_minutes", 5)))
+        for key, job in list(self.jobs.items()):
+            fs = self.folder_files(key)
+            if not fs:
+                continue
+            got = sum(int(f.get("bytesTransferred") or 0) for f in fs)
+            states = [f.get("state") or "" for f in fs]
+            all_failed = all("Completed" in s and "Succeeded" not in s for s in states)
+            stalled = got == 0 and all(("Queued" in s or "Requested" in s or "Initializing" in s or
+                                        ("Completed" in s and "Succeeded" not in s)) for s in states)
+            if job.get("auto", True) and (all_failed or (stalled and _time.time() - job.get("started", 0) > mins * 60)):
+                self.switch_source(key, auto=True)
+                return                                      # one at a time
+
+    def switch_source(self, key, auto=False):
+        job = self.jobs.get(key)
+        if not job:
+            user, folder = key.split("\x00", 1)
+            job = {"name": remote_split(folder)[1] or folder, "tried": [user], "alts": [], "user": user, "dir": folder}
+            self.jobs[key] = job
+        fs = self.folder_files(key)
+        done_stems = {self._stem(f["filename"]) for f in fs if "Succeeded" in (f.get("state") or "")}
+        leftover = [f for f in fs if "Succeeded" not in (f.get("state") or "")]
+        self._switching = True
+        c = self.client()
+        self.status.setText(self.win.L(f"looking for another user with “{job['name']}”…"))
+
+        def work():
+            alts = [a for a in job.get("alts", []) if a["user"] not in job["tried"]]
+            if not alts:                                        # nobody left from the old search: search again
+                q = " ".join(sorted(self._tokens(job["name"]), key=job["name"].lower().find))[:80] or job["name"]
+                res = c.search(q, int(self.win.cfg.get("dl_search_seconds", 15)) * 1000)
+                ref = {"name": job["name"], "audio": [None] * max(1, len(fs) - sum(1 for f in fs if os.path.splitext(
+                    f["filename"])[1].lower() in IMG_EXT))}
+                rows = group_results(res, bool(self.win.cfg.get("dl_lossless_only", True)))
+                alts = [r for r in rows if r["user"] not in job["tried"] and self.similar(ref, r)]
+            return alts
+
+        def done(alts, err):
+            self._switching = False
+            if err or not alts:
+                job["auto"] = False                          # don't keep hammering
+                msg = f"no one else has “{job['name']}” right now" if not err else str(err)
+                self.status.setText(self.win.L(msg))
+                if not auto:
+                    self.win.toast(msg)
+                self.render_downloads()
+                return
+            new = alts[0]
+            want = [f for f in new["audio"] + new["images"] if self._stem(f["filename"]) not in done_stems]
+            if done_stems and len(want) == len(new["audio"] + new["images"]):
+                want = [f for f in want if os.path.splitext(f["filename"])[1].lower() in IMG_EXT] or want
+            # drop the stuck ones from the old user
+            for f in leftover:
+                try:
+                    c.cancel(job["user"], f["id"], remove=True)
+                except Exception:
+                    pass
+                self.pending.pop((job["user"], f["filename"]), None)
+            self.jobs.pop(key, None)
+            job["alts"] = [a for a in alts[1:]]
+            old = job["user"]
+            self.download(new, want or None, job=job)
+            if auto:
+                self.win.toast(f"“{job['name']}” wasn't starting — switched from {old} to {new['user']}")
+            else:
+                self.win.toast(f"switched “{job['name']}” from {old} to {new['user']}")
+        self.win.bg(work, done)
+
+    @staticmethod
+    def _stem(fn):
+        base = os.path.splitext(remote_split(fn)[1])[0].lower()
+        base = re.sub(r"^[\d\s._-]+", "", base)
+        return re.sub(r"[^a-z0-9]+", "", base)
+
+    def retry_failed(self, key):
+        user, _folder = key.split("\x00", 1)
+        failed = [f for f in self.folder_files(key)
+                  if "Completed" in (f.get("state") or "") and "Succeeded" not in f["state"]]
+        if not failed:
+            self.win.toast("nothing failed in that one")
+            return
+        c = self.client()
+
+        def work():
+            for f in failed:
+                try:
+                    c.cancel(user, f["id"], remove=True)
+                except Exception:
+                    pass
+            c.enqueue(user, failed)
+        job = self.jobs.get(key)
+        if job:
+            job["started"] = _time.time()
+        self.win.bg(work, lambda _r, e: (self.status.setText(str(e) if e else self.win.L(
+            f"retrying {len(failed)} files from {user}")), self.poll()))
+
+    def cancel_folder(self, key):
+        user, _folder = key.split("\x00", 1)
+        fs = [f for f in self.folder_files(key) if "Succeeded" not in (f.get("state") or "")]
+        c = self.client()
+
+        def work():
+            for f in fs:
+                try:
+                    c.cancel(user, f["id"], remove=True)
+                except Exception:
+                    pass
+        for f in fs:
+            self.pending.pop((user, f["filename"]), None)
+        self.jobs.pop(key, None)
+        self.save_pending()
+        self.win.bg(work, lambda _r, _e: self.poll())
+
+    def dl_menu(self, pos):
+        it = self.dl.itemAt(pos)
+        key = it.data(Qt.UserRole) if it else None
+        if not key:
+            return
+        L = self.win.L
+        m = QMenu(self)
+        m.addAction(L("try another user"), lambda: self.switch_source(key))
+        m.addAction(L("retry failed files"), lambda: self.retry_failed(key))
+        m.addAction(L("cancel"), lambda: self.cancel_folder(key))
+        m.addSeparator()
+        m.addAction(L("search for it again"), lambda: (self.q.setText((self.jobs.get(key) or {}).get(
+            "name") or remote_split(key.split("\x00", 1)[1])[1]), self.search()))
+        m.addAction(L("open soulseek log"), lambda: QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(self.win.soulseek.log_path()))))
+        m.exec(self.dl.viewport().mapToGlobal(pos))
+
+    # ---- windows firewall
+    def check_firewall(self):
+        if not sys.platform.startswith("win"):
+            return
+        self.win.bg(firewall_ok, lambda ok, _e: self.fw.setVisible(ok is False))
+
+    def fix_firewall(self):
+        if firewall_fix(int(self.win.cfg.get("slsk_port", 2234))):
+            self.fw.hide()
+            self.win.toast("firewall fixed (if you clicked yes) — reconnecting to Soulseek")
+            self.win.soulseek.restart()
+            QTimer.singleShot(3000, self.poll)
+        else:
+            self.win.toast("firewall change cancelled")
+
     def clear_finished(self):
         c = self.client()
 
@@ -3972,6 +4253,7 @@ class DownloadPage(QWidget):
         if self.client().ready():
             self.timer.start()
             self.poll()
+            self.check_firewall()
 
 
 # ------------------------------------------------------------------ inspect (spek-style spectrum + true-lossless verdict)
@@ -8120,6 +8402,8 @@ class Settings(QWidget):
         fd.addRow("import into", self.folder_row("import_root", "default: your first music folder"))
         fd.addRow("move (not copy) on import", self.check("import_move", rebuild=False))
         fd.addRow("search time (sec)", self.spin("dl_search_seconds", 5, 60, rebuild=False))
+        fd.addRow("switch to another user if a download\nhasn't started", self.check("dl_auto_switch", rebuild=False))
+        fd.addRow("…after (minutes)", self.spin("dl_stall_minutes", 1, 60, rebuild=False))
         fd.addRow(QLabel(""))
         fd.addRow(QLabel("WATCH FOLDER", objectName="eyebrow"))
         wexp = QLabel("New music files or zips that land here (e.g. your Downloads folder) get sorted into "
@@ -8368,17 +8652,8 @@ class Settings(QWidget):
         return row
 
     def allow_firewall(self):
-        """inbound allow rules for this python (python.exe + pythonw.exe) via an elevated netsh. windows asks first."""
-        import ctypes
-        exe_dir = Path(sys.executable).parent
-        progs = [p for p in (exe_dir / "pythonw.exe", exe_dir / "python.exe", Path(sys.executable)) if p.exists()]
-        cmds = []
-        for i, prog in enumerate(dict.fromkeys(str(p) for p in progs)):
-            cmds.append(f'netsh advfirewall firewall add rule name="Nexus Soulseek {i + 1}" dir=in action=allow '
-                        f'program="{prog}" enable=yes profile=any')
-        args = "/c " + " & ".join(cmds)
-        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", args, None, 0)
-        if rc > 32:
+        """inbound allow rule for python on the soulseek ports only, via an elevated netsh. windows asks first."""
+        if firewall_fix(int(self.win.cfg.get("slsk_port", 2234))):
             self.test_result.setText("firewall rules added (if you clicked yes) — restart Nexus, then search again")
             self.win.soulseek.restart()
         else:
