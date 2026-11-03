@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.12.6"
+VERSION = "1.12.7"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -3582,6 +3582,8 @@ class SoulseekNative:
         self.loop = self.thread = self.client = self.stop_ev = None
         self.state, self.error = "off", ""
         self.base = "soulseek network"
+        self.kicked = False            # the server signed us out because this name logged in somewhere else
+        self.last_search = 0.0
 
     @staticmethod
     def available():
@@ -3601,8 +3603,46 @@ class SoulseekNative:
 
     def label(self):
         u, _ = self.creds()
+        if self.state == "online" and self.kicked:
+            return f"soulseek · {u} · signed out (name used elsewhere)"
+        if self.state == "online" and self.client is not None and getattr(self.client, "session", 1) is None:
+            return f"soulseek · {u} · reconnecting…"
         return {"online": f"soulseek · {u} · online", "connecting": "soulseek · connecting…",
                 "error": f"soulseek · {self.error}"[:90]}.get(self.state, f"soulseek · {u or 'no login set'}")
+
+    # ---- session watching (all called on the asyncio thread)
+    async def _on_kicked(self, _event):
+        self.kicked = True
+        self.log.warning("kicked by the server: this username logged in from somewhere else")
+
+    async def _on_session_lost(self, _event):
+        self.log.warning("signed out of the soulseek server")
+
+    async def _on_session(self, _event):
+        self.kicked = False
+        self.log.info("signed in to the soulseek server")
+
+    def ensure_session(self, wait=12):
+        """a search only reaches anyone while we're signed in: after a drop, wait for auto-reconnect,
+        and after being kicked (or a dead connection) sign in again from scratch."""
+        self.ensure_started()
+        def signed_in():
+            return getattr(self.client, "session", True) is not None
+        t0 = _time.monotonic()
+        while not signed_in() and not self.kicked and _time.monotonic() - t0 < wait:
+            _time.sleep(0.3)
+        if signed_in() and not self.kicked:
+            return
+        why = ("the same username was signed in somewhere else (another Nexus, Nicotine+, or someone using "
+               "your login)" if self.kicked else "the connection to Soulseek dropped")
+        self.log.warning("re-signing in: %s", why)
+        self.restart()
+        try:
+            self.ensure_started()
+        except DownloadError as e:
+            raise DownloadError(f"signed out of Soulseek — {why} — and signing back in failed: {e}")
+        if self.win is not None:
+            self.win.__dict__["_slsk_note"] = f"signed back in to Soulseek — {why}"
 
     # ---- lifecycle
     def ensure_started(self, timeout=25):
@@ -3704,6 +3744,14 @@ class SoulseekNative:
         )
         self.client = SoulSeekClient(settings, shares_cache=SharesShelveCache(str(data)),
                                      transfer_cache=TransferShelveCache(str(data)))
+        try:
+            from aioslsk.events import KickedEvent, SessionDestroyedEvent, SessionInitializedEvent
+            self.client.events.register(KickedEvent, self._on_kicked)
+            self.client.events.register(SessionDestroyedEvent, self._on_session_lost)
+            self.client.events.register(SessionInitializedEvent, self._on_session)
+        except Exception as e:
+            self.log.info("couldn't watch session events: %s", e)
+        self.kicked = False
         self.stop_ev = asyncio.Event()
         try:
             await self.client.start()
@@ -3752,7 +3800,11 @@ class SoulseekNative:
                 "bitDepth": a.get(AttributeKey.BIT_DEPTH)}
 
     def search(self, text, timeout_ms=15000, progress=None, cancelled=lambda: False):
-        self.ensure_started()
+        self.ensure_session()
+        gap = _time.monotonic() - self.last_search
+        if gap < 3:                                     # back-to-back searches get ignored by the server
+            _time.sleep(3 - gap)
+        self.last_search = _time.monotonic()
 
         async def start():
             return await self.client.searches.search(text)
@@ -3788,7 +3840,7 @@ class SoulseekNative:
                 for u, free, speed, q, items in rs]
 
     def enqueue(self, username, files):
-        self.ensure_started()
+        self.ensure_session()
 
         async def go():
             for f in files:
@@ -4043,6 +4095,9 @@ class DownloadPage(QWidget):
 
         def done(res, err):
             self.busy = False
+            note = self.win.__dict__.pop("_slsk_note", "")
+            if note:
+                self.win.toast(note)
             if err:
                 self.status.setText(str(err))
                 return
@@ -10796,6 +10851,25 @@ def _log_uncaught(kind, value, tb):
     sys.__excepthook__(kind, value, tb) if sys.stderr else None
 
 
+def single_instance(app):
+    """a second Nexus would sign in to Soulseek with the same name and kick the first one off (and both
+    would fight over the audio device): if one is already running, bring it to the front instead."""
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
+    import getpass
+    name = f"nexus-{getpass.getuser()}"
+    sock = QLocalSocket()
+    sock.connectToServer(name)
+    if sock.waitForConnected(400):
+        sock.write(b"show")
+        sock.waitForBytesWritten(400)
+        sock.disconnectFromServer()
+        return None
+    QLocalServer.removeServer(name)                  # stale socket from a crash
+    server = QLocalServer(app)
+    server.listen(name)
+    return server
+
+
 def main():
     sys.excepthook = _log_uncaught
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
@@ -10814,9 +10888,29 @@ def main():
             from PySide6.QtGui import QIcon
             app.setWindowIcon(QIcon(str(icp)))
             break
+    server = None
+    if not os.environ.get("NEXUS_MULTI"):
+        try:
+            server = single_instance(app)
+        except Exception:
+            server = False
+        if server is None:
+            sys.exit(0)                               # the running Nexus came to the front
     load_bundled_fonts()
     w = Main()
     w.show()
+
+    def raise_window():
+        c = server.nextPendingConnection()
+        if c is not None:
+            c.readAll()
+        if w.isMinimized():
+            w.showNormal()
+        w.show()
+        w.raise_()
+        w.activateWindow()
+    if server:
+        server.newConnection.connect(raise_window)
     sys.exit(app.exec())
 
 
