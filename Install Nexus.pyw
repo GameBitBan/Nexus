@@ -238,6 +238,23 @@ def main():
     except Exception as e:
         msg(f"install failed:\n{e}", "Nexus", 0x10)
         return
+    py = Path(sys.executable).with_name("python.exe")
+    try:
+        chk = subprocess.run([str(py if py.exists() else sys.executable), str(DEST / "Nexus.pyw"), "--check"],
+                             capture_output=True, text=True, timeout=300, cwd=str(DEST), creationflags=0x08000000)
+        report = (chk.stdout or "") + (chk.stderr or "")[-1500:]
+        healthy = chk.returncode == 0 and not any(f"FAIL  {m}" in report for m in ("PySide6", "mutagen"))
+    except Exception as e:
+        report, healthy = f"check failed to run: {e}", False
+    if QUIET:
+        print(report.strip())
+        if not healthy:
+            print("\nNexus is installed but something above failed - send a screenshot of this window.")
+            return
+    elif not healthy:
+        msg("Nexus is installed, but a check found a problem:\n\n" + report.strip()[-1500:] +
+            "\n\nSend a screenshot of this to whoever gave you Nexus.", "Nexus", 0x30)
+        return
     if QUIET:
         print("Nexus installed:", *links, sep="\n  ")
         subprocess.Popen([str(pythonw()), str(DEST / "Nexus.pyw")], cwd=str(DEST))

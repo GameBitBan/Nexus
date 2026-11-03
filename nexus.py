@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.12.0"
+VERSION = "1.12.1"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 
 AUDIO_EXT = {".flac", ".m4a", ".alac", ".wav", ".aiff", ".aif", ".wv", ".ape",
@@ -10537,7 +10537,20 @@ class Main(QMainWindow):
         super().closeEvent(e)
 
 
+def _log_uncaught(kind, value, tb):
+    """errors inside the running app (no console with pythonw): write them down instead of losing them."""
+    import traceback
+    try:
+        with open(app_dir() / "crash.log", "a", encoding="utf-8") as f:
+            f.write(f"\n==== {_time.strftime('%Y-%m-%d %H:%M:%S')}  nexus {VERSION}\n"
+                    + "".join(traceback.format_exception(kind, value, tb)))
+    except Exception:
+        pass
+    sys.__excepthook__(kind, value, tb) if sys.stderr else None
+
+
 def main():
+    sys.excepthook = _log_uncaught
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     if sys.platform.startswith("win") and not (resource_dir() / "no_aumid").exists():
