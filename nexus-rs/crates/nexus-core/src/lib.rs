@@ -14,6 +14,7 @@ pub mod net;
 pub mod paths;
 pub mod playlists;
 pub mod scanner;
+pub mod selftest;
 pub mod secret;
 pub mod skins;
 pub mod tags;

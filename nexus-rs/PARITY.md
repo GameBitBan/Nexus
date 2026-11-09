@@ -33,7 +33,7 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] Ambient cover glow behind the window, toasts
 - [x] Single instance on Linux/macOS (talks to a running Python Nexus too)
 - [ ] Single instance on Windows (named pipe)
-- [~] File drops + `nexus FILE…` (skins, exports, audio, cover images; album zips and updates still to do)
+- [x] File drops + `nexus FILE…` (skins, album zips, exports, audio, cover images)
 
 ## Stage 3 — look & feel
 - [x] Visualizer page + analyzer (dots, bars, mirror, wave, ring; cover colour; immersive)
@@ -48,14 +48,14 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 ## Stage 4 — library tools & integrations
 - [x] Tag editor (single + batch, inline cells, cover drop / paste / folder / online lookup, tools, rename files) — keeps unknown tags; FLAC/Opus/OGG/M4A/ALAC/MP3/WAV/AIFF/WV/APE/DSF
 - [x] Import from Spotify / Apple Music / CSV / M3U exports, library matcher, rematch after scans ("get missing albums" waits for Soulseek)
-- [ ] Discover page (Deezer charts, previews, net images)
-- [ ] Internet Archive + Jamendo sources, web downloads
-- [ ] Watch folder
-- [ ] Discord Rich Presence (app id 1566983013445931018)
-- [ ] MPRIS (Linux media keys / desktop widgets)
+- [x] Discover page (top artists, similar artists from Deezer, previews on a second engine, missing albums, rediscover, net image cache)
+- [ ] Internet Archive + Jamendo sources, web downloads (with the Download page, stage 5)
+- [x] Watch folder + album zip import (Artist/Album sorting, cover art along, rescan)
+- [x] Discord Rich Presence (app id 1566983013445931018; cover upload or iTunes/Deezer match; flatpak/snap/Vesktop sockets; one-time offer)
+- [x] MPRIS (Linux media keys / desktop widgets) + Windows media overlay — new in Nexus 2
 - [x] OBS now-playing file
-- [~] Updater (GitHub release digests) + offline mode / network policy — `net.rs` done (http(s) only, size caps, proxy, system certs, offline allow-list)
-- [ ] Problem log, uncaught-error log, `--selftest`
+- [x] Updater (GitHub release digests; Nix installs are only told) + offline mode / network policy (http(s) only, size caps, proxy, system certs, offline allow-list)
+- [x] Problem log (crash.log: panics, playback errors), `--selftest`
 
 ## Stage 5 — Soulseek
 - [ ] Native client: login, search, browse, download queue, resume

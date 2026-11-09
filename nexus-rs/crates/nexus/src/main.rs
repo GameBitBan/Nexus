@@ -31,8 +31,7 @@ const ICON_PNG: &[u8] = include_bytes!("../../../../icons/nexus-256.png");
 pub fn log_problem(text: &str) {
     let p = paths::data_dir().join("crash.log");
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let _ = writeln!(f, "[{now}] nexus {}: {text}", nexus_core::VERSION);
+        let _ = writeln!(f, "\n==== {}  nexus {}  ({} {})\n{text}", nexus_core::util::utc_stamp(), nexus_core::VERSION, std::env::consts::OS, std::env::consts::ARCH);
     }
 }
 
@@ -52,6 +51,15 @@ fn main() {
     if args.iter().any(|a| a == "--version") {
         println!("nexus {}", nexus_core::VERSION);
         return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--selftest") {
+        let out = args.get(i + 1).cloned().unwrap_or_else(|| "selftest.txt".into());
+        let (report, ok) = nexus_core::selftest::run();
+        print!("{report}");
+        if let Err(e) = std::fs::write(&out, &report) {
+            eprintln!("couldn't write {out}: {e}");
+        }
+        std::process::exit(if ok { 0 } else { 1 });
     }
     let restarted = args.iter().any(|a| a == "--restarted");
     let files: Vec<std::path::PathBuf> = args.iter().filter(|a| !a.starts_with("--")).map(std::path::PathBuf::from).filter(|p| p.exists()).map(|p| p.canonicalize().unwrap_or(p)).collect();

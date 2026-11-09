@@ -315,6 +315,7 @@ impl Nexus {
         self.errors += 1;
         let cur = self.current_track().map(|t| t.path.clone()).unwrap_or_default();
         log::warn!("can't play {cur}: {msg} [output: {:?}]", self.engine.output_info());
+        crate::log_problem(&format!("can't play {cur}: {msg}  [output: {:?}]", self.engine.output_info()));
         let short: String = format!("can't play: {msg}").chars().take(140).collect();
         self.toast(short);
         if self.errors < 5 && !msg.contains("audio") {
