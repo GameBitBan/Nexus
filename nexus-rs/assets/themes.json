@@ -1,0 +1,101 @@
+{
+ "nothing": {
+  "bg": "#000000",
+  "panel": "#0a0a0a",
+  "text": "#ffffff",
+  "dim": "#7d7d7d",
+  "accent": "#ffffff",
+  "select": "#161616",
+  "border": "#1c1c1c"
+ },
+ "nothing light": {
+  "bg": "#f1f1f1",
+  "panel": "#fafafa",
+  "text": "#000000",
+  "dim": "#8c8c8c",
+  "accent": "#000000",
+  "select": "#e4e4e4",
+  "border": "#dddddd"
+ },
+ "midnight": {
+  "bg": "#0e0f13",
+  "panel": "#14161c",
+  "text": "#d7dae0",
+  "dim": "#6b7080",
+  "accent": "#7aa2f7",
+  "select": "#1d2130",
+  "border": "#23262f"
+ },
+ "mono": {
+  "bg": "#000000",
+  "panel": "#0a0a0a",
+  "text": "#f2f2f2",
+  "dim": "#6f6f6f",
+  "accent": "#ffffff",
+  "select": "#1c1c1c",
+  "border": "#1a1a1a"
+ },
+ "paper": {
+  "bg": "#f4f1ea",
+  "panel": "#ebe6db",
+  "text": "#2b2a28",
+  "dim": "#8a857b",
+  "accent": "#c2410c",
+  "select": "#e0d9ca",
+  "border": "#d6cfc0"
+ },
+ "amber": {
+  "bg": "#0c0a05",
+  "panel": "#110e06",
+  "text": "#ffb000",
+  "dim": "#7a5a10",
+  "accent": "#ffd26a",
+  "select": "#2a2008",
+  "border": "#241b07"
+ },
+ "phosphor": {
+  "bg": "#050a05",
+  "panel": "#081008",
+  "text": "#33ff66",
+  "dim": "#1d7a35",
+  "accent": "#b4ffc8",
+  "select": "#0e2a14",
+  "border": "#0f2a16"
+ },
+ "nord": {
+  "bg": "#2e3440",
+  "panel": "#353c4a",
+  "text": "#e5e9f0",
+  "dim": "#7b8496",
+  "accent": "#88c0d0",
+  "select": "#434c5e",
+  "border": "#434c5e"
+ },
+ "gruvbox": {
+  "bg": "#1d2021",
+  "panel": "#282828",
+  "text": "#ebdbb2",
+  "dim": "#928374",
+  "accent": "#fabd2f",
+  "select": "#3c3836",
+  "border": "#3c3836"
+ },
+ "rose": {
+  "bg": "#191724",
+  "panel": "#1f1d2e",
+  "text": "#e0def4",
+  "dim": "#6e6a86",
+  "accent": "#ebbcba",
+  "select": "#26233a",
+  "border": "#26233a"
+ },
+ "catppuccin": {
+  "bg": "#1e1e2e",
+  "panel": "#181825",
+  "text": "#cdd6f4",
+  "dim": "#6c7086",
+  "accent": "#cba6f7",
+  "select": "#313244",
+  "border": "#313244"
+ }
+}

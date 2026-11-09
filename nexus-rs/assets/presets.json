@@ -1,0 +1,98 @@
+{
+ "nothing": {
+  "theme": "nothing",
+  "font_family": "",
+  "display_font": "",
+  "font_size": 11,
+  "uppercase": false,
+  "brackets": "",
+  "nav_marker": "",
+  "corner_radius": 12,
+  "cover_size": 172,
+  "list_cover_size": 36,
+  "progress_style": "dots",
+  "volume_style": "dots",
+  "control_style": "icons",
+  "pill_buttons": true,
+  "placeholder": "",
+  "glyphs": {
+   "now": "\u25cf"
+  },
+  "header_case": "upper",
+  "ui_case": "sentence",
+  "layout": "studio",
+  "now_panel": true
+ },
+ "nothing light": {
+  "theme": "nothing light",
+  "font_family": "",
+  "display_font": "",
+  "font_size": 11,
+  "uppercase": false,
+  "brackets": "",
+  "nav_marker": "",
+  "corner_radius": 12,
+  "cover_size": 172,
+  "list_cover_size": 36,
+  "progress_style": "dots",
+  "volume_style": "dots",
+  "control_style": "icons",
+  "pill_buttons": true,
+  "placeholder": "",
+  "glyphs": {
+   "now": "\u25cf"
+  },
+  "header_case": "upper",
+  "ui_case": "sentence",
+  "layout": "studio",
+  "now_panel": true
+ },
+ "apple": {
+  "theme": "mono",
+  "font_family": "",
+  "display_font": "Inter",
+  "font_size": 11,
+  "uppercase": false,
+  "brackets": "",
+  "nav_marker": "",
+  "corner_radius": 10,
+  "cover_size": 180,
+  "list_cover_size": 36,
+  "progress_style": "line",
+  "volume_style": "line",
+  "control_style": "icons",
+  "pill_buttons": true,
+  "placeholder": "\u266a",
+  "glyphs": {
+   "now": "\u266a"
+  },
+  "header_case": "title",
+  "ui_case": "sentence",
+  "layout": "studio",
+  "now_panel": true
+ },
+ "terminal": {
+  "theme": "midnight",
+  "font_family": "DejaVu Sans Mono",
+  "display_font": "DejaVu Sans Mono",
+  "font_size": 11,
+  "uppercase": false,
+  "brackets": "[]",
+  "nav_marker": ">",
+  "corner_radius": 0,
+  "cover_size": 160,
+  "list_cover_size": 28,
+  "progress_style": "text",
+  "volume_style": "text",
+  "control_style": "text",
+  "pill_buttons": false,
+  "placeholder": "\u266a",
+  "glyphs": {
+   "now": "\u25b6"
+  },
+  "header_case": "lower",
+  "ui_case": "lower",
+  "layout": "classic",
+  "now_panel": false
+ }
+}

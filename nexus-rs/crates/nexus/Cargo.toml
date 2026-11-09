@@ -1,0 +1,12 @@
+[package]
+name = "nexus"
+description = "Nexus — a music player for your own lossless library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nexus-core = { path = "../nexus-core" }
+anyhow.workspace = true
+log.workspace = true

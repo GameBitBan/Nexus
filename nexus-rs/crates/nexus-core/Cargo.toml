@@ -1,0 +1,32 @@
+[package]
+name = "nexus-core"
+description = "Nexus music player: library, tags, audio engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+rayon.workspace = true
+walkdir = "2"
+lofty = "0.25"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+md5 = "0.8"
+regex = "1"
+unicode-normalization = "0.1"
+base64 = "0.22"
+ffmpeg-next = "9"
+cpal = "0.18"
+rtrb = "0.3"
+realfft = "3"
+rustfft = "6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
