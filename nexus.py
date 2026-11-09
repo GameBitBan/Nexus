@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 APP = "nexus"
 APP_NAME = "Nexus"
 OLD_APP = "monotone"
-VERSION = "1.19.0"
+VERSION = "1.19.1"
 GITHUB_REPO = ""            # "owner/repo" — Nexus checks its GitHub Releases for updates
 DISCORD_APP_ID = "1566983013445931018"  # Nexus's own discord app: lets anyone show what they're playing without making one
 
@@ -2263,8 +2263,14 @@ class NexusEngine(QObject):
                 return i
         if wi is not None and apis[wi].get("default_output_device", -1) >= 0:
             return apis[wi]["default_output_device"]
-        dflt = sd.default.device[1] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
-        return dflt if dflt is not None and dflt >= 0 else None
+        try:                                  # sounddevice's default is an input/output pair (not a tuple)
+            dflt = int(sd.default.device[1])
+        except (TypeError, ValueError, IndexError):
+            try:
+                dflt = int(sd.default.device)
+            except (TypeError, ValueError):
+                dflt = -1
+        return dflt if dflt >= 0 else None
 
     def _ensure_stream(self, rate):
         """opens the output; returns the sample rate actually used. tries a few ways, because some devices
