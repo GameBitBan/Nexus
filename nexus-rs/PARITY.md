@@ -20,7 +20,7 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] ReplayGain (track / album + preamp), volume curve, soft limiter
 - [x] Device loss → reopen
 - [ ] WASAPI exclusive mode (Windows)
-- [ ] Output device list / pick in settings (core done, UI pending)
+- [x] Output device list / pick in settings
 
 ## Stage 2 — GUI shell (`nexus`, egui)
 - [x] Window, bundled fonts (Doto / Inter, or installed ones), themes, text-style look, case + bracket rules
@@ -36,14 +36,14 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [ ] File drops (skins, album zips, updates)
 
 ## Stage 3 — look & feel
-- [ ] Visualizer page + analyzer
-- [ ] Equalizer page (curve graph, presets, preamp)
-- [ ] Lyrics page (`.lrc` synced + embedded)
-- [ ] Inspect page (spectrum image, lossless verdict)
-- [ ] Settings page (every Python option)
-- [ ] Skins: `.nexusskin` import/export, built-in skins, skin cards, current look → skin
-- [ ] Skin changes keep the layout
-- [ ] Backgrounds: image, blurred cover, MP4 video
+- [x] Visualizer page + analyzer (dots, bars, mirror, wave, ring; cover colour; immersive)
+- [x] Equalizer page (curve over live spectrum, presets, preamp, dot sliders)
+- [x] Lyrics page (`.lrc` synced + embedded SYLT / LRC / plain; click a line to jump)
+- [x] Inspect page (spectrogram, lossless / fake hi-res / padded 24-bit verdict — same results as Python)
+- [x] Settings page (every Python option; buttons for Soulseek/Discord/updates wait for their stages)
+- [x] Skins: `.nexusskin` import/export/drop, built-in skins + looks, skin cards, skin maker (stylesheet subset: panel borders, main buttons, heading colour)
+- [x] Skin changes keep the layout
+- [x] Backgrounds: image or looping video (blur, opacity, paused while minimised), cover glow
 
 ## Stage 4 — library tools & integrations
 - [ ] Tag editor (single + batch, cover drop, online album lookup)

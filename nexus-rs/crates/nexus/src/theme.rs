@@ -19,6 +19,9 @@ pub const UI_FONTS: &[&str] = &[
     "DejaVu Sans",
 ];
 pub const DISPLAY_FONTS: &[&str] = &["Ndot 57", "Ndot 55", "NDot 57", "NType 82", "Doto"];
+/// Installed fonts used for glyphs the main fonts lack (box drawing ━─, ◐, ♪, arrows…).
+pub const FALLBACK_FONTS: &[&str] = &["DejaVu Sans", "Noto Sans Symbols 2", "Noto Sans Symbols", "Segoe UI Symbol", "Symbola", "Noto Sans", "Arial Unicode MS"];
+
 pub const MONO_FONTS: &[&str] = &[
     "JetBrainsMono Nerd Font", "JetBrains Mono", "Iosevka", "Iosevka Term", "Fira Code", "Cascadia Mono", "Cascadia Code", "Hack",
     "Source Code Pro", "DejaVu Sans Mono", "Consolas", "Menlo", "Monaco",
@@ -423,11 +426,27 @@ pub fn font_definitions(cfg: &Config, sys: Option<&SystemFonts>) -> egui::FontDe
     list.extend(fallbacks.iter().cloned());
     defs.families.insert(W::Display.family(), list);
 
+    // installed fallbacks go last in every family
+    let mut extra = Vec::new();
+    if let Some(s) = sys {
+        for (i, name) in FALLBACK_FONTS.iter().enumerate() {
+            if let Some((b, idx)) = s.has(name).then(|| s.face(name, 400)).flatten() {
+                let key = format!("fallback-{i}");
+                defs.font_data.insert(key.clone(), data(b, idx));
+                extra.push(key);
+            }
+        }
+    }
+    for list in defs.families.values_mut() {
+        list.extend(extra.iter().cloned());
+    }
+
     // monospace: a real mono font if there is one (terminal look), egui's otherwise
     if let Some((b, i)) = sys.and_then(|s| MONO_FONTS.iter().find(|f| s.has(f)).and_then(|f| s.face(f, 400))) {
         defs.font_data.insert("mono".into(), data(b, i));
         let mut list = vec!["mono".to_string()];
         list.extend(mono);
+        list.extend(extra);
         defs.families.insert(FontFamily::Monospace, list);
     }
     defs

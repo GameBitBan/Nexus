@@ -633,6 +633,7 @@ fn npbar(app: &mut Nexus, ui: &mut Ui, bar: Rect, classic: bool, mini: bool) {
     let page = app.page.clone();
     let eq_on = app.cfg.get("eq").and_then(|e| e.get("on")).and_then(|v| v.as_bool()).unwrap_or(false);
     let panel_on = app.cfg.b("now_panel");
+    let has_lyrics = page == Page::Lyrics || cur.as_ref().is_some_and(|tr| app.lyrics.get(&tr.path).is_some());
     region(ui, right, Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let small = t.font(W::Regular, -1.5);
@@ -666,7 +667,8 @@ fn npbar(app: &mut Nexus, ui: &mut Ui, bar: Rect, classic: bool, mini: bool) {
         if icon_button(ui, &t, Icon::Vis, 30.0, IconOpts { active: page == Page::Visualizer, ..Default::default() }).on_hover_text("visualizer  (ctrl+b)").clicked() {
             app.acts.push(Act::ToggleVisualizer);
         }
-        if icon_button(ui, &t, Icon::Lyrics, 30.0, IconOpts { active: page == Page::Lyrics, ..Default::default() }).on_hover_text("lyrics  (ctrl+l)").clicked() {
+        let tip = if has_lyrics { "lyrics  (ctrl+l)" } else { "no lyrics for this song" };
+        if icon_button(ui, &t, Icon::Lyrics, 30.0, IconOpts { active: page == Page::Lyrics, disabled: !has_lyrics, ..Default::default() }).on_hover_text(tip).clicked() {
             app.acts.push(Act::ToggleLyrics);
         }
         if let Some(tr) = &cur {

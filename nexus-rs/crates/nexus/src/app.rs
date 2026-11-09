@@ -768,6 +768,7 @@ impl Nexus {
                         theme::UI_FONTS.iter().take_while(|f| **f != "Inter").any(|f| s.has(f))
                             || theme::DISPLAY_FONTS.iter().take_while(|f| **f != "Doto").any(|f| s.has(f))
                             || theme::MONO_FONTS.iter().any(|f| s.has(f))
+                            || theme::FALLBACK_FONTS.iter().any(|f| s.has(f))
                     });
                 if wants {
                     self.ctx.set_fonts(theme::font_definitions(&self.cfg, self.sysfonts.as_deref()));
@@ -1073,6 +1074,11 @@ impl Nexus {
     fn handle_drops(&mut self, ctx: &Context) {
         let files: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
         for f in files {
+            let ext = f.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            if ext == nexus_core::skins::SKIN_EXT || (ext == "zip" && nexus_core::skins::zip_has(&f, "skin.json")) {
+                self.import_skin(&f);
+                return;
+            }
             if nexus_core::library::is_audio(&f) {
                 self.go(Page::Inspect(Some(f.to_string_lossy().to_string())), true);
                 return;

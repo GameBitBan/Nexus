@@ -303,24 +303,24 @@ fn look(app: &mut Nexus, ui: &mut Ui) {
         [("bg", c.bg), ("panel", c.panel), ("text", c.text), ("dim", c.dim), ("accent", c.accent), ("select", c.select), ("border", c.border)];
     row(app, ui, "colors", |ui| {
         ui.vertical(|ui| {
-            for chunk in cur.chunks(4) {
-                ui.horizontal(|ui| {
-                    for (k, col) in chunk {
-                        ui.vertical(|ui| {
-                            widgets::small_dim(ui, &t, k);
-                            let mut cc = *col;
-                            ui.horizontal(|ui| {
-                                if egui::widgets::color_picker::color_edit_button_srgba(ui, &mut cc, egui::widgets::color_picker::Alpha::Opaque).changed() {
-                                    overrides.insert(k.to_string(), json!(format!("#{:02x}{:02x}{:02x}", cc.r(), cc.g(), cc.b())));
-                                    changed = true;
-                                }
-                                widgets::small_dim(ui, &t, &format!("#{:02x}{:02x}{:02x}", col.r(), col.g(), col.b()));
-                            });
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(14.0, 8.0);
+                for (k, col) in cur {
+                    ui.allocate_ui_with_layout(vec2(110.0, 48.0), Layout::top_down(Align::Min), |ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        widgets::small_dim(ui, &t, k);
+                        let mut cc = col;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if egui::widgets::color_picker::color_edit_button_srgba(ui, &mut cc, egui::widgets::color_picker::Alpha::Opaque).changed() {
+                                overrides.insert(k.to_string(), json!(format!("#{:02x}{:02x}{:02x}", cc.r(), cc.g(), cc.b())));
+                                changed = true;
+                            }
+                            widgets::small_dim(ui, &t, &format!("#{:02x}{:02x}{:02x}", col.r(), col.g(), col.b()));
                         });
-                        ui.add_space(10.0);
-                    }
-                });
-            }
+                    });
+                }
+            });
             reset = widgets::text_button(ui, &t, "reset colors to theme").clicked();
         });
     });
@@ -528,13 +528,12 @@ fn skins_tab(app: &mut Nexus, ui: &mut Ui) {
             let p = skins::preset(&name).unwrap_or_default();
             let theme = p.get("theme").and_then(Value::as_str).unwrap_or("nothing").to_string();
             let colors = theme_colors_map(&theme);
-            ui.vertical(|ui| {
+            ui.allocate_ui_with_layout(vec2(196.0, 200.0), Layout::top_down(Align::Min), |ui| {
                 let title = name[..1].to_uppercase() + &name[1..];
                 if skin_card(app, ui, &title, "built in", &colors, None, cur.is_empty() && preset == name).clicked() {
                     skins::apply_preset(&mut app.cfg, &name);
                     app.after_look_change();
                 }
-                ui.add_space(30.0);
             });
         }
         for m in &list {
@@ -542,7 +541,7 @@ fn skins_tab(app: &mut Nexus, ui: &mut Ui) {
             let mut colors = theme_colors_map(&theme);
             colors.extend(m.colors.clone());
             let sub = if !m.author.is_empty() { format!("by {}", m.author) } else if !m.description.is_empty() { m.description.clone() } else { "skin".into() };
-            ui.vertical(|ui| {
+            ui.allocate_ui_with_layout(vec2(196.0, 200.0), Layout::top_down(Align::Min), |ui| {
                 if skin_card(app, ui, &m.name, &sub, &colors, m.background_path(), m.slug == cur).clicked() {
                     match skins::apply(&mut app.cfg, &m.slug) {
                         Ok(()) => {
