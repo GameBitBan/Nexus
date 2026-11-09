@@ -3,6 +3,7 @@
 pub mod audio;
 pub mod config;
 pub mod dsf;
+pub mod imports;
 pub mod inspect;
 pub mod library;
 pub mod lyrics;

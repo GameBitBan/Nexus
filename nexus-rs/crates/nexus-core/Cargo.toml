@@ -27,6 +27,9 @@ cpal = "0.18"
 rtrb = "0.3"
 realfft = "3"
 rustfft = "6"
+csv = "1"
+plist = "1"
+indexmap = { version = "2", features = ["serde"] }
 ureq = { version = "3.5", default-features = false, features = ["rustls", "platform-verifier", "json", "gzip"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 

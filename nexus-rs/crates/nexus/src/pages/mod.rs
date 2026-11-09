@@ -4,6 +4,7 @@ mod albums;
 mod browse;
 mod collection;
 mod eq;
+pub mod import;
 pub mod inspect;
 pub mod lyrics;
 mod queue;
@@ -34,6 +35,7 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
         Page::Lyrics => lyrics::draw(app, ui, rect),
         Page::Inspect(p) => inspect::draw(app, ui, rect, p),
         Page::Tags(p) => tags::draw(app, ui, rect, &p),
+        Page::Import => import::draw(app, ui, rect),
         other => coming(app, ui, rect, &other),
     }
 }
@@ -45,7 +47,6 @@ fn coming(app: &mut Nexus, ui: &mut Ui, rect: Rect, page: &Page) {
         Page::Download => "download",
         Page::Discover => "discover",
         Page::Jam => "jam",
-        Page::Import => "import",
         _ => "page",
     };
     region(ui, rect.shrink2(vec2(32.0, 28.0)), Layout::top_down(Align::Min), |ui| {

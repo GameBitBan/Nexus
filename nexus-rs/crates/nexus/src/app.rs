@@ -162,6 +162,7 @@ pub struct Nexus {
     pub trash: Vec<(PathBuf, f64)>,
     pub inspect: crate::pages::inspect::InspectState,
     pub tags: crate::pages::tags::TagState,
+    pub import: crate::pages::import::ImportState,
 }
 
 impl Nexus {
@@ -259,6 +260,7 @@ impl Nexus {
             trash: Vec::new(),
             inspect: Default::default(),
             tags: Default::default(),
+            import: Default::default(),
             cfg,
         };
         app.refresh_background();
@@ -553,6 +555,7 @@ impl Nexus {
                 self.scan_label.clear();
                 self.set_library(Library::from_tracks(tracks));
                 self.lib.save();
+                self.import_rematch();
             }
             Err(crossbeam_channel::TryRecvError::Empty) => {
                 let (d, n) = (job.progress.done.load(Ordering::Relaxed), job.progress.total.load(Ordering::Relaxed));
@@ -1101,21 +1104,51 @@ impl Nexus {
 
     fn handle_drops(&mut self, ctx: &Context) {
         let files: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
-        for f in files {
-            let ext = f.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-            if ext == nexus_core::skins::SKIN_EXT || (ext == "zip" && nexus_core::skins::zip_has(&f, "skin.json")) {
-                self.import_skin(&f);
+        if !files.is_empty() {
+            self.open_files(files, false);
+        }
+    }
+
+    /// Files dropped on the window, or given on the command line ("open with Nexus").
+    pub fn open_files(&mut self, files: Vec<PathBuf>, from_cli: bool) {
+        if self.page == Page::Import && !from_cli {
+            self.import_load(files);
+            return;
+        }
+        let ext = |f: &PathBuf| f.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        for f in &files {
+            let e = ext(f);
+            if e == nexus_core::skins::SKIN_EXT || (e == "zip" && nexus_core::skins::zip_has(f, "skin.json")) {
+                self.import_skin(f);
                 return;
             }
-            if matches!(self.page, Page::Tags(_)) && nexus_core::library::is_image(&f) {
-                self.tags_drop_image(&f);
-                return;
-            }
-            if nexus_core::library::is_audio(&f) {
-                self.go(Page::Inspect(Some(f.to_string_lossy().to_string())), true);
+            if matches!(self.page, Page::Tags(_)) && nexus_core::library::is_image(f) && !from_cli {
+                self.tags_drop_image(f);
                 return;
             }
         }
+        let exports: Vec<PathBuf> = files.iter().filter(|f| matches!(ext(f).as_str(), "zip" | "csv" | "json" | "xml" | "txt" | "tsv" | "m3u" | "m3u8")).cloned().collect();
+        if !exports.is_empty() {
+            self.go(Page::Import, true);
+            self.import_load(exports);
+            return;
+        }
+        let audio: Vec<PathBuf> = files.into_iter().filter(|f| nexus_core::library::is_audio(f)).collect();
+        if audio.is_empty() {
+            return;
+        }
+        if !from_cli {
+            self.go(Page::Inspect(Some(audio[0].to_string_lossy().to_string())), true);
+            return;
+        }
+        let tracks: Tracks = audio
+            .iter()
+            .filter_map(|f| {
+                let p = f.to_string_lossy().to_string();
+                self.lib.track(&p).cloned().or_else(|| nexus_core::scanner::read_track(f).map(std::sync::Arc::new))
+            })
+            .collect();
+        self.play_list(tracks, 0);
     }
 
     fn update_title(&mut self) {

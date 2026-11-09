@@ -33,7 +33,7 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] Ambient cover glow behind the window, toasts
 - [x] Single instance on Linux/macOS (talks to a running Python Nexus too)
 - [ ] Single instance on Windows (named pipe)
-- [ ] File drops (skins, album zips, updates)
+- [~] File drops + `nexus FILE…` (skins, exports, audio, cover images; album zips and updates still to do)
 
 ## Stage 3 — look & feel
 - [x] Visualizer page + analyzer (dots, bars, mirror, wave, ring; cover colour; immersive)
@@ -47,7 +47,7 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 
 ## Stage 4 — library tools & integrations
 - [x] Tag editor (single + batch, inline cells, cover drop / paste / folder / online lookup, tools, rename files) — keeps unknown tags; FLAC/Opus/OGG/M4A/ALAC/MP3/WAV/AIFF/WV/APE/DSF
-- [ ] Import from Spotify / Apple Music exports, library matcher, rematch
+- [x] Import from Spotify / Apple Music / CSV / M3U exports, library matcher, rematch after scans ("get missing albums" waits for Soulseek)
 - [ ] Discover page (Deezer charts, previews, net images)
 - [ ] Internet Archive + Jamendo sources, web downloads
 - [ ] Watch folder

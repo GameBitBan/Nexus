@@ -50,6 +50,7 @@ fn main() {
         return;
     }
     let restarted = args.iter().any(|a| a == "--restarted");
+    let files: Vec<std::path::PathBuf> = args.iter().filter(|a| !a.starts_with("--")).map(std::path::PathBuf::from).filter(|p| p.exists()).map(|p| p.canonicalize().unwrap_or(p)).collect();
     if std::env::var_os("NEXUS_MULTI").is_none() && !instance::claim(restarted) {
         return; // the running one came to the front
     }
@@ -87,7 +88,11 @@ fn main() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 ctx.request_repaint();
             });
-            Ok(Box::new(app::Nexus::new(cc)))
+            let mut app = app::Nexus::new(cc);
+            if !files.is_empty() {
+                app.open_files(files, true);
+            }
+            Ok(Box::new(app))
         }),
     );
     if let Err(e) = res {
