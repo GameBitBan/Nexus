@@ -17,7 +17,7 @@ crossbeam-channel.workspace = true
 rayon.workspace = true
 walkdir = "2"
 lofty = "0.25"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+image.workspace = true
 md5 = "0.8"
 regex = "1"
 unicode-normalization = "0.1"

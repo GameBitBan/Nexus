@@ -23,13 +23,17 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [ ] Output device list / pick in settings (core done, UI pending)
 
 ## Stage 2 — GUI shell (`nexus`, egui)
-- [ ] Window, bundled fonts (Doto / Inter), themes, text-style look
-- [ ] Studio layout: side tabs, album grid, song table, now panel with record/dial
-- [ ] Player bar: transport, seek, volume, shuffle/repeat, quality badge, lossy marker
-- [ ] Collection / Artists / Albums / Queue / Playlists pages, column browser
-- [ ] Search, sorting, keyboard shortcuts, context menus, drag & drop to queue/playlists
-- [ ] Play counts / stats, resume last session
-- [ ] Single instance (second launch focuses the first)
+- [x] Window, bundled fonts (Doto / Inter, or installed ones), themes, text-style look, case + bracket rules
+- [x] Studio layout: nav rail, album grid, song table, now panel with the spinning record + dot ring
+- [x] Player bar: transport, seek (dots / line / text), volume + boost, shuffle/repeat, quality badge, lossy colour
+- [x] Album / playlist / artists / songs / queue pages, column browser (with arrow keys)
+- [x] Search, sorting, keyboard shortcuts, right-click menus, playlists (new / rename in place / delete + undo)
+- [x] Play counts, resume last session (queue + position), window size, save on logout/kill
+- [x] Layouts: studio, classic, tabs, focus, mini (+ pin on top)
+- [x] Ambient cover glow behind the window, toasts
+- [x] Single instance on Linux/macOS (talks to a running Python Nexus too)
+- [ ] Single instance on Windows (named pipe)
+- [ ] File drops (skins, album zips, updates)
 
 ## Stage 3 — look & feel
 - [ ] Visualizer page + analyzer
@@ -38,9 +42,8 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [ ] Inspect page (spectrum image, lossless verdict)
 - [ ] Settings page (every Python option)
 - [ ] Skins: `.nexusskin` import/export, built-in skins, skin cards, current look → skin
-- [ ] Layouts: studio, classic, tabs, focus, mini (+ pin on top); skin changes keep the layout
+- [ ] Skin changes keep the layout
 - [ ] Backgrounds: image, blurred cover, MP4 video
-- [ ] Ambient cover colour
 
 ## Stage 4 — library tools & integrations
 - [ ] Tag editor (single + batch, cover drop, online album lookup)

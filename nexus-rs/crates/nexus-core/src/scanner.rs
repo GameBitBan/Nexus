@@ -57,8 +57,12 @@ pub fn read_track(path: &Path) -> Option<Track> {
     let albumartist = Some(get(&ItemKey::AlbumArtist)).filter(|s| !s.is_empty()).unwrap_or_else(|| artist.clone());
     let date = Some(get(&ItemKey::RecordingDate)).filter(|s| !s.is_empty()).unwrap_or_else(|| get(&ItemKey::Year));
     let year: String = date.chars().take(4).collect();
-    let bitrate = props.audio_bitrate().or(props.overall_bitrate()).unwrap_or(0) * 1000;
     let fmt = format_name(&tagged.file_type(), &tagged);
+    let mut kbps = props.audio_bitrate().or(props.overall_bitrate()).unwrap_or(0);
+    if fmt == "MP3" {
+        kbps = snap_mp3_bitrate(kbps);
+    }
+    let bitrate = kbps * 1000;
     Some(Track {
         path: path.to_string_lossy().to_string(),
         title: Some(get(&ItemKey::TrackTitle)).filter(|s| !s.is_empty()).unwrap_or(stem),
@@ -80,6 +84,13 @@ pub fn read_track(path: &Path) -> Option<Track> {
         mtime: mtime_of(path).unwrap_or(0.0),
         extra: Default::default(),
     })
+}
+
+/// lofty works the MP3 bitrate out from size ÷ length, so a short 320k file reads as 322k:
+/// snap to the standard rate when it's that close (what the frame headers say).
+fn snap_mp3_bitrate(kbps: u32) -> u32 {
+    const STD: [u32; 14] = [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+    STD.iter().copied().find(|&b| (f64::from(kbps) - f64::from(b)).abs() / f64::from(b) < 0.02).unwrap_or(kbps)
 }
 
 /// Embedded front cover, or a `cover.jpg` / `folder.png` / … next to the file.

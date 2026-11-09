@@ -5,6 +5,7 @@ pub mod config;
 pub mod dsf;
 pub mod library;
 pub mod paths;
+pub mod playlists;
 pub mod scanner;
 pub mod secret;
 pub mod util;

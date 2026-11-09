@@ -6,7 +6,26 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "nexus"
+path = "src/main.rs"
+
 [dependencies]
 nexus-core = { path = "../nexus-core" }
 anyhow.workspace = true
 log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+image.workspace = true
+fastrand.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "clipboard", "links", "accesskit"] }
+egui = "0.37"
+fontdb = "0.24"
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "wayland"] }
+open = "5"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+realfft = "3"
+ctrlc = { version = "3", features = ["termination"] }
+

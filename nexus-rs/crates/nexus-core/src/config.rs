@@ -12,8 +12,8 @@ pub fn defaults() -> Map<String, Value> {
     let mut d: Map<String, Value> = serde_json::from_str(DEFAULTS_JSON).expect("bundled defaults.json is valid");
     for (k, v) in [
         ("mpris", json!(true)),
-        ("audio_backend", json!("auto")),
-        ("output_device", json!("")),
+        ("renderer", json!("auto")),
+        ("lossy_color", json!("")),
         ("gapless", json!(true)),
         ("layout_pref", json!(false)),
     ] {

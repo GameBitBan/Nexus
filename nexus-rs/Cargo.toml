@@ -7,7 +7,7 @@ version = "2.0.0-dev"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/GameBitBan/Nexus"
-rust-version = "1.88"
+rust-version = "1.95"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -18,6 +18,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 rayon = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+fastrand = "2"
 
 [profile.dev]
 opt-level = 1
