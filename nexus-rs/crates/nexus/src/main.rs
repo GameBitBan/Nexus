@@ -8,6 +8,7 @@ mod background;
 mod app;
 mod covers;
 mod icons;
+mod importing;
 mod instance;
 mod integrations;
 mod layout;

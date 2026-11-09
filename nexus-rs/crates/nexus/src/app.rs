@@ -169,6 +169,7 @@ pub struct Nexus {
     pub presence_seen: (Option<String>, bool),
     pub discord_offer: Option<crossbeam_channel::Receiver<bool>>,
     pub media: Option<crate::media::Media>,
+    pub importing: Option<crate::importing::Importing>,
     pub update_rx: Option<(crossbeam_channel::Receiver<Result<nexus_core::update::Check, String>>, bool)>,
 }
 
@@ -274,6 +275,7 @@ impl Nexus {
             presence_seen: (None, false),
             discord_offer: None,
             update_rx: None,
+            importing: Some(crate::importing::Importing::new(&cc.egui_ctx, cfg.s("_watch_marked"))),
             media: if cfg.b("mpris") { crate::media::Media::new(&cc.egui_ctx, crate::media::hwnd_of(cc)) } else { None },
             cfg,
         };
@@ -287,6 +289,7 @@ impl Nexus {
             app.rescan(false);
         }
         app.maybe_offer_discord();
+        app.watch_apply();
         if app.cfg.b("update_check") {
             app.check_updates(false);
         }
@@ -330,6 +333,9 @@ impl Nexus {
         if matches!(key, "audio_device" | "exclusive_mode" | "replaygain" | "replaygain_preamp" | "gapless" | "*") {
             self.engine.set_options(playback_options(&self.cfg));
             self.update_gapless_next();
+        }
+        if matches!(key, "watch_folder" | "watch_enabled" | "import_root" | "library_folders" | "*") {
+            self.watch_apply();
         }
         if key.starts_with("discord_") {
             self.discord_setting_changed(key);
@@ -1148,6 +1154,10 @@ impl Nexus {
                 return;
             }
         }
+        if let Some(z) = files.iter().find(|f| ext(f) == "zip" && nexus_core::importer::zip_has_audio(f)) {
+            self.import_album_zip(z.clone());
+            return;
+        }
         let exports: Vec<PathBuf> = files.iter().filter(|f| matches!(ext(f).as_str(), "zip" | "csv" | "json" | "xml" | "txt" | "tsv" | "m3u" | "m3u8")).cloned().collect();
         if !exports.is_empty() {
             self.go(Page::Import, true);
@@ -1237,6 +1247,7 @@ impl eframe::App for Nexus {
         self.presence_tick(now);
         self.media_tick(now);
         self.update_tick();
+        self.importing_tick(now);
         self.poll_scan();
         self.shortcuts(&ctx);
         self.handle_drops(&ctx);

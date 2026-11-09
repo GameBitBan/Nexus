@@ -96,6 +96,14 @@ pub fn skins_dir() -> PathBuf {
     d
 }
 
+/// `~/Music` → `/home/you/Music`.
+pub fn expand_user(p: &str) -> PathBuf {
+    match p.strip_prefix("~") {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') => home_dir().join(rest.trim_start_matches(['/', '\\'])),
+        _ => PathBuf::from(p),
+    }
+}
+
 /// `a/b/../c` → `a/c` without touching the disk.
 pub fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();

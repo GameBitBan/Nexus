@@ -5,6 +5,7 @@ pub mod config;
 pub mod discord;
 pub mod discover;
 pub mod dsf;
+pub mod importer;
 pub mod imports;
 pub mod inspect;
 pub mod library;
