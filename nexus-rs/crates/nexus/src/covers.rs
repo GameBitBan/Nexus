@@ -14,6 +14,8 @@ const LIMIT: usize = 600;
 enum Kind {
     Square(u32),
     Blur,
+    /// any image file, longest side this many px (skin card previews)
+    File(std::path::PathBuf, u32),
 }
 
 struct Job {
@@ -57,8 +59,9 @@ impl Covers {
                 .spawn(move || {
                     for job in jrx {
                         let path = dir.join(format!("{}.jpg", job.key));
-                        let (tex, color) = match job.kind {
-                            Kind::Square(px) => (load_square(&ctx, &path, &job.key, px), None),
+                        let (tex, color) = match &job.kind {
+                            Kind::Square(px) => (load_square(&ctx, &path, &job.key, *px), None),
+                            Kind::File(f, px) => (load_file(&ctx, f, *px), None),
                             Kind::Blur => {
                                 let (t, c) = load_blur(&ctx, &path, &job.key);
                                 (t, Some(c))
@@ -144,6 +147,14 @@ impl Covers {
         self.lookup(key, Kind::Square(bucket))
     }
 
+    /// Any picture file (cached under `key`), scaled to fit `px`.
+    pub fn file_texture(&mut self, key: &str, path: &std::path::Path, px: u32) -> Option<TextureId> {
+        if !path.exists() {
+            return None;
+        }
+        self.lookup(key, Kind::File(path.to_path_buf(), px))
+    }
+
     /// The soft colour wash made from a cover (ambient background, visualizer page).
     pub fn blurred(&mut self, key: &str) -> Option<TextureId> {
         self.lookup(key, Kind::Blur)
@@ -225,6 +236,12 @@ fn load_square(ctx: &egui::Context, path: &std::path::Path, key: &str, px: u32) 
     let img = open(path)?;
     let sq = img.resize_to_fill(px, px, image::imageops::FilterType::CatmullRom).to_rgba8();
     Some(ctx.load_texture(format!("cover:{key}:{px}"), to_color_image(&sq), TextureOptions::LINEAR))
+}
+
+fn load_file(ctx: &egui::Context, path: &std::path::Path, px: u32) -> Option<TextureHandle> {
+    let img = open(path)?;
+    let img = img.resize(px, px, image::imageops::FilterType::Triangle).to_rgba8();
+    Some(ctx.load_texture(format!("file:{}", path.display()), to_color_image(&img), TextureOptions::LINEAR))
 }
 
 /// 14 px → 56 → 224 with smooth scaling: a cheap, soft blur (same as the Python version).

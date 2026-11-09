@@ -60,7 +60,15 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui) {
 fn paint_background(app: &mut Nexus, ui: &Ui, rect: Rect) {
     let c = app.t.c;
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, c.bg);
+    p.rect_filled(rect, 0.0, alpha(c.bg, app.t.alpha));
+    if let Some(tex) = &app.bg.tex {
+        // cover the window, keep the picture's shape
+        let [w, h] = app.bg.size;
+        let k = (rect.width() / w.max(1) as f32).max(rect.height() / h.max(1) as f32);
+        let r = Rect::from_center_size(rect.center(), vec2(w as f32 * k, h as f32 * k));
+        let op = (app.cfg.f("skin_bg_opacity") as f32).clamp(5.0, 100.0) / 100.0;
+        p.add(egui::epaint::RectShape::filled(r, 0.0, Color32::from_white_alpha((op * 255.0) as u8)).with_texture(tex.id(), covers::full_uv()));
+    }
     if !app.cfg.b("ambient_background") {
         return;
     }
@@ -101,19 +109,26 @@ pub fn gradient(p: &egui::Painter, r: Rect, top: Color32, bottom: Color32) {
     p.add(egui::Shape::mesh(mesh));
 }
 
-/// Panel colour, see-through when the ambient glow is on.
+/// Panel colour: see-through when the ambient glow or a background is on, or the window itself is.
 pub fn panel_fill(app: &Nexus) -> Color32 {
     let c = app.t.c;
+    let mut a = app.t.alpha;
     if app.cfg.b("ambient_background") {
         let glow = (app.cfg.f("ambient_strength") as f32).clamp(0.0, 100.0) / 100.0;
-        alpha(c.panel, 1.0 - glow * 0.5)
-    } else {
-        c.panel
+        a = a.min(1.0 - glow * 0.5);
     }
+    if app.bg.tex.is_some() {
+        a = a.min(0.72);
+    }
+    alpha(c.panel, a)
 }
 
-fn card(app: &Nexus, ui: &Ui, r: Rect) {
-    ui.painter().rect_filled(r, app.t.radius.max(6.0), panel_fill(app));
+pub fn card(app: &Nexus, ui: &Ui, r: Rect) {
+    let rad = app.t.radius.max(6.0);
+    ui.painter().rect_filled(r, rad, panel_fill(app));
+    if let Some((w, col)) = app.t.panel_border {
+        ui.painter().rect_stroke(r, rad, Stroke::new(w, col), StrokeKind::Inside);
+    }
 }
 
 // ------------------------------------------------------------------ studio / focus

@@ -147,6 +147,13 @@ pub struct Theme {
     pub nav_marker: String,
     pub lossy: Color32,
     pub header_text: String,
+    /// window opacity 0..1 (background_alpha)
+    pub alpha: f32,
+    /// from the skin's stylesheet (and the custom one): border around the panels
+    pub panel_border: Option<(f32, Color32)>,
+    /// primary button colours: (fill, text, border)
+    pub primary: Option<(Color32, Color32, Color32)>,
+    pub h1_color: Option<Color32>,
 }
 
 fn bracket_pair(br: &str, pad: bool) -> (String, String) {
@@ -207,7 +214,45 @@ impl Theme {
                 let h = cfg.s("header_text");
                 if h.is_empty() { "nexus".into() } else { h }
             },
+            alpha: ((cfg.f("background_alpha") as f32) / 100.0).clamp(0.2, 1.0),
+            panel_border: None,
+            primary: None,
+            h1_color: None,
         }
+        .with_skin_style(cfg)
+    }
+
+    /// The parts of the skin's (and the custom) stylesheet Nexus 2 understands.
+    fn with_skin_style(mut self, cfg: &Config) -> Self {
+        let c = self.c;
+        let hexs = |x: Color32| format!("#{:02x}{:02x}{:02x}", x.r(), x.g(), x.b());
+        let colors: serde_json::Map<String, Value> = [
+            ("bg", c.bg),
+            ("panel", c.panel),
+            ("text", c.text),
+            ("dim", c.dim),
+            ("accent", c.accent),
+            ("select", c.select),
+            ("border", c.border),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), Value::String(hexs(v))))
+        .collect();
+        let mut qss = nexus_core::skins::active(cfg).map(|s| s.qss).unwrap_or_default();
+        qss.push('\n');
+        qss.push_str(&cfg.s("custom_qss"));
+        let st = nexus_core::skins::style(&qss, &colors);
+        if let Some((w, col, a)) = st.panel_border {
+            self.panel_border = hex(&col).map(|x| (w, alpha(x, a)));
+        }
+        if st.primary_bg.is_some() || st.primary_fg.is_some() {
+            let bg = st.primary_bg.as_deref().and_then(hex).unwrap_or(c.text);
+            let fg = st.primary_fg.as_deref().and_then(hex).unwrap_or(c.bg);
+            let br = st.primary_border.as_deref().and_then(hex).unwrap_or(bg);
+            self.primary = Some((bg, fg, br));
+        }
+        self.h1_color = st.h1_color.as_deref().and_then(hex);
+        self
     }
 
     /// pt → egui points (logical px)
@@ -295,8 +340,8 @@ impl SystemFonts {
         SystemFonts { db }
     }
 
-    pub fn families(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.db.faces().flat_map(|f| f.families.iter().map(|(n, _)| n.clone())).collect();
+    pub fn families(&self, mono_only: bool) -> Vec<String> {
+        let mut v: Vec<String> = self.db.faces().filter(|f| !mono_only || f.monospaced).flat_map(|f| f.families.iter().map(|(n, _)| n.clone())).collect();
         v.sort_by_key(|s| s.to_lowercase());
         v.dedup();
         v

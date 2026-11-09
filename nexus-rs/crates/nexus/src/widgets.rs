@@ -190,10 +190,11 @@ pub fn pill_pad(ui: &mut Ui, t: &Theme, text: &str, kind: Pill, pad: f32) -> Res
     let p = ui.painter();
     let rad = size.y / 2.0;
     let hover = resp.hovered();
-    let (fill, stroke, col) = match kind {
-        Pill::Primary if hover => (c.dim, c.dim, c.bg),
-        Pill::Primary => (c.text, c.text, c.bg),
-        Pill::Normal => (c.panel, if hover { c.dim } else { c.border }, c.text),
+    let (fill, stroke, col) = match (kind, t.primary) {
+        (Pill::Primary, Some((bg, fg, br))) => (if hover { crate::theme::shade(bg, 0.85) } else { bg }, br, fg),
+        (Pill::Primary, None) if hover => (c.dim, c.dim, c.bg),
+        (Pill::Primary, None) => (c.text, c.text, c.bg),
+        (Pill::Normal, _) => (c.panel, if hover { c.dim } else { c.border }, c.text),
     };
     p.rect(rect, rad, fill, Stroke::new(1.0, stroke), StrokeKind::Inside);
     p.text(rect.center(), Align2::CENTER_CENTER, label, font, col);

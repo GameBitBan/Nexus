@@ -148,6 +148,19 @@ pub struct Nexus {
     pub pinned: bool,
     pub title: String,
     pub last_time: f64,
+    pub bg: crate::background::Background,
+    // settings page state
+    pub settings_tab: String,
+    pub settings_edit: std::collections::HashMap<String, String>,
+    pub font_filter: String,
+    pub mono_only: bool,
+    pub devices: Option<Vec<String>>,
+    pub skin_form: crate::pages::settings::SkinForm,
+    pub eq_drag: Option<usize>,
+    pub eq_save_due: Option<f64>,
+    pub lyrics: crate::pages::lyrics::LyricsState,
+    pub trash: Vec<(PathBuf, f64)>,
+    pub inspect: crate::pages::inspect::InspectState,
 }
 
 impl Nexus {
@@ -162,6 +175,7 @@ impl Nexus {
                 cfg.save();
             }
         }
+        nexus_core::skins::install_bundled(&mut cfg);
         let t = Theme::from_config(&cfg);
         ctx.set_fonts(theme::font_definitions(&cfg, None));
         theme::apply_style(&ctx, &t);
@@ -230,8 +244,21 @@ impl Nexus {
             pinned: false,
             title: String::new(),
             last_time: 0.0,
+            bg: Default::default(),
+            settings_tab: "look".into(),
+            settings_edit: Default::default(),
+            font_filter: String::new(),
+            mono_only: false,
+            devices: None,
+            skin_form: Default::default(),
+            eq_drag: None,
+            eq_save_due: None,
+            lyrics: Default::default(),
+            trash: Vec::new(),
+            inspect: Default::default(),
             cfg,
         };
+        app.refresh_background();
         app.set_volume(app.cfg.f("volume"));
         if app.cfg.b("remember_session") {
             app.restore_session();
@@ -261,7 +288,100 @@ impl Nexus {
             self.ctx.set_fonts(theme::font_definitions(&self.cfg, self.sysfonts.as_deref()));
         }
         theme::apply_style(&self.ctx, &self.t);
-        self.covers.clear();
+    }
+
+    pub fn refresh_background(&mut self) {
+        let p = nexus_core::skins::background_path(&self.cfg);
+        let blur = self.cfg.b("skin_bg_blur");
+        self.bg.set(&self.ctx.clone(), p, blur);
+    }
+
+    /// Something in the settings changed: apply what depends on it.
+    pub fn setting_changed(&mut self, key: &str) {
+        self.cfg.save();
+        let fonts = matches!(key, "font_family" | "display_font" | "*");
+        self.restyle(fonts);
+        if key.starts_with("skin") || key == "custom_background" || key == "*" {
+            self.refresh_background();
+        }
+        if matches!(key, "audio_device" | "exclusive_mode" | "replaygain" | "replaygain_preamp" | "gapless" | "*") {
+            self.engine.set_options(playback_options(&self.cfg));
+            self.update_gapless_next();
+        }
+        if key == "volume_max" {
+            let v = self.cfg.f("volume");
+            self.set_volume(v);
+        }
+        if key == "album_sort" || key == "*" {
+            self.albums_cache.0 = 0;
+        }
+        if key == "song_columns" || key == "*" {
+            self.songs_tbl.reset();
+        }
+    }
+
+    /// After a skin or built-in look was applied: fonts, colours, background, maybe the layout.
+    pub fn after_look_change(&mut self) {
+        self.settings_edit.clear();
+        self.setting_changed("*");
+        let l = self.layout_name();
+        if l == "mini" {
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(480.0, 780.0)));
+        }
+    }
+
+    pub fn import_skin(&mut self, f: &std::path::Path) {
+        match nexus_core::skins::import_file(f) {
+            Ok(slug) => {
+                let _ = nexus_core::skins::apply(&mut self.cfg, &slug);
+                self.skin_form.loaded = false;
+                self.after_look_change();
+                let name = nexus_core::skins::active(&self.cfg).map(|s| s.name).unwrap_or(slug);
+                self.toast(format!("skin “{name}” installed"));
+            }
+            Err(e) => self.toast(format!("couldn't import that skin: {e}")),
+        }
+    }
+
+    pub fn delete_skin(&mut self, m: &nexus_core::skins::Skin) {
+        let trash = m.path.with_file_name(format!("{}.deleted", m.slug));
+        let _ = std::fs::remove_dir_all(&trash);
+        if std::fs::rename(&m.path, &trash).is_err() {
+            self.toast("couldn't delete that skin");
+            return;
+        }
+        let was_active = self.cfg.s("skin") == m.slug;
+        if was_active {
+            self.cfg.set("skin", "");
+            self.cfg.set("color_overrides", serde_json::json!({}));
+            self.after_look_change();
+        }
+        let (slug, path, name) = (m.slug.clone(), m.path.clone(), m.name.clone());
+        let due = self.ctx.input(|i| i.time) + 15.0;
+        self.trash.push((trash.clone(), due));
+        self.toast_action(
+            format!("deleted skin “{name}”"),
+            "undo",
+            move |app| {
+                if std::fs::rename(&trash, &path).is_ok() {
+                    app.trash.retain(|(p, _)| *p != trash);
+                    if was_active {
+                        let _ = nexus_core::skins::apply(&mut app.cfg, &slug);
+                        app.after_look_change();
+                    }
+                }
+            },
+            15.0,
+        );
+    }
+
+    pub fn set_cfg(&mut self, key: &str, v: impl Into<serde_json::Value>) {
+        let v = v.into();
+        if self.cfg.get(key) == Some(&v) {
+            return;
+        }
+        self.cfg.set(key, v);
+        self.setting_changed(key);
     }
 
     pub fn dial_size(&self) -> f32 {
@@ -657,6 +777,22 @@ impl Nexus {
     }
 
     fn timers(&mut self, now: f64) {
+        self.trash.retain(|(p, due)| {
+            if now >= *due {
+                let _ = std::fs::remove_dir_all(p);
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(due) = self.eq_save_due {
+            if now >= due {
+                self.eq_save_due = None;
+                self.cfg.save();
+            } else {
+                self.ctx.request_repaint_after(std::time::Duration::from_secs_f64(due - now));
+            }
+        }
         if let Some(due) = self.stats_due {
             if now >= due {
                 self.stats_due = None;
@@ -1002,6 +1138,8 @@ impl eframe::App for Nexus {
         }
         self.poll_fonts();
         self.covers.pump();
+        let hidden = ctx.input(|i| i.viewport().minimized.unwrap_or(false)) && self.cfg.get("bg_video_pause_hidden").map(|v| v.as_bool() != Some(false)).unwrap_or(true);
+        self.bg.pump(&ctx, hidden);
         self.poll_engine();
         self.poll_scan();
         self.shortcuts(&ctx);
@@ -1018,7 +1156,14 @@ impl eframe::App for Nexus {
         self.schedule(now);
     }
 
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        if self.t.alpha < 1.0 { [0.0, 0.0, 0.0, 0.0] } else { egui::Rgba::from(self.t.c.bg).to_array() }
+    }
+
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        for (p, _) in self.trash.drain(..) {
+            let _ = std::fs::remove_dir_all(p);
+        }
         self.save_state();
         self.engine.stop();
         crate::instance::release();

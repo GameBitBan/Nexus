@@ -27,6 +27,7 @@ cpal = "0.18"
 rtrb = "0.3"
 realfft = "3"
 rustfft = "6"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

@@ -27,5 +27,6 @@ rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "w
 open = "5"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 realfft = "3"
+ffmpeg-next = "9"
 ctrlc = { version = "3", features = ["termination"] }
 

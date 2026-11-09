@@ -4,6 +4,7 @@
 
 mod acts;
 mod analyzer;
+mod background;
 mod app;
 mod covers;
 mod icons;

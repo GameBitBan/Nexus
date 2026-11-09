@@ -3,8 +3,13 @@
 mod albums;
 mod browse;
 mod collection;
+mod eq;
+pub mod inspect;
+pub mod lyrics;
 mod queue;
+pub mod settings;
 mod songs;
+pub mod visualizer;
 
 use crate::app::{Nexus, Page};
 use crate::layout::region;
@@ -22,6 +27,11 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
         Page::Queue => queue::draw(app, ui, rect),
         Page::Album(k) => collection::album(app, ui, rect, &k),
         Page::Playlist(n) => collection::playlist(app, ui, rect, &n),
+        Page::Settings(tab) => settings::draw(app, ui, rect, tab),
+        Page::Eq => eq::draw(app, ui, rect),
+        Page::Visualizer => visualizer::draw(app, ui, rect),
+        Page::Lyrics => lyrics::draw(app, ui, rect),
+        Page::Inspect(p) => inspect::draw(app, ui, rect, p),
         other => coming(app, ui, rect, &other),
     }
 }
@@ -30,11 +40,6 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
 fn coming(app: &mut Nexus, ui: &mut Ui, rect: Rect, page: &Page) {
     let t = app.t.clone();
     let name = match page {
-        Page::Settings(_) => "settings",
-        Page::Eq => "equalizer",
-        Page::Lyrics => "lyrics",
-        Page::Visualizer => "visualizer",
-        Page::Inspect(_) => "inspect",
         Page::Tags(_) => "tag editor",
         Page::Download => "download",
         Page::Discover => "discover",

@@ -38,7 +38,15 @@ impl Config {
         Config { path, values }
     }
 
+    /// Defaults only, never saved (previews, tests).
+    pub fn in_memory() -> Self {
+        Config { path: PathBuf::new(), values: defaults() }
+    }
+
     pub fn save(&mut self) {
+        if self.path.as_os_str().is_empty() {
+            return;
+        }
         if let Some(Value::String(pw)) = self.values.get("slsk_password") {
             if !pw.is_empty() && !pw.starts_with("dpapi:") {
                 let p = crate::secret::protect(pw);

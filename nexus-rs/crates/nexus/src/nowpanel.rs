@@ -4,7 +4,7 @@
 use crate::acts::Act;
 use crate::analyzer::resample;
 use crate::app::Nexus;
-use crate::layout::{panel_fill, region};
+use crate::layout::region;
 use crate::theme::{W, alpha};
 use crate::widgets::{self, elided, galley};
 use egui::epaint::RectShape;
@@ -15,7 +15,7 @@ use std::f32::consts::PI;
 pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
     let t = app.t.clone();
     let c = t.c;
-    ui.painter().rect_filled(rect, t.radius.max(6.0), panel_fill(app));
+    crate::layout::card(app, ui, rect);
     let inner = Rect::from_min_max(rect.min + vec2(22.0, 18.0), rect.max - vec2(22.0, 16.0));
     let cur = app.current_track().cloned();
     region(ui, inner, Layout::top_down(Align::Min), |ui| {
