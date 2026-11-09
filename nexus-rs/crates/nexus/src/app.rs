@@ -161,6 +161,7 @@ pub struct Nexus {
     pub lyrics: crate::pages::lyrics::LyricsState,
     pub trash: Vec<(PathBuf, f64)>,
     pub inspect: crate::pages::inspect::InspectState,
+    pub tags: crate::pages::tags::TagState,
 }
 
 impl Nexus {
@@ -176,6 +177,7 @@ impl Nexus {
             }
         }
         nexus_core::skins::install_bundled(&mut cfg);
+        nexus_core::net::set_offline(cfg.b("offline_mode"));
         let t = Theme::from_config(&cfg);
         ctx.set_fonts(theme::font_definitions(&cfg, None));
         theme::apply_style(&ctx, &t);
@@ -256,6 +258,7 @@ impl Nexus {
             lyrics: Default::default(),
             trash: Vec::new(),
             inspect: Default::default(),
+            tags: Default::default(),
             cfg,
         };
         app.refresh_background();
@@ -307,6 +310,9 @@ impl Nexus {
         if matches!(key, "audio_device" | "exclusive_mode" | "replaygain" | "replaygain_preamp" | "gapless" | "*") {
             self.engine.set_options(playback_options(&self.cfg));
             self.update_gapless_next();
+        }
+        if key == "offline_mode" || key == "*" {
+            nexus_core::net::set_offline(self.cfg.b("offline_mode"));
         }
         if key == "volume_max" {
             let v = self.cfg.f("volume");
@@ -580,6 +586,28 @@ impl Nexus {
             Page::Album(k) if self.lib.album(k).is_none() => self.go(Page::Albums, false),
             _ => {}
         }
+    }
+
+    /// Files were renamed (tag editor): keep the library, playlists, stats and queue pointing at them.
+    pub fn paths_moved(&mut self, moved: &std::collections::HashMap<String, String>) {
+        let lib = Library::from_tracks(nexus_core::scanner::remap_paths(&self.lib.tracks, moved));
+        for v in [&mut self.queue, &mut self.unshuffled] {
+            for t in v.iter_mut() {
+                if let Some(n) = moved.get(&t.path).and_then(|n| lib.track(n)) {
+                    *t = n.clone();
+                }
+            }
+        }
+        if let Some(n) = self.current_path.as_ref().and_then(|c| moved.get(c)) {
+            self.current_path = Some(n.clone());
+        }
+        self.playlists.remap(moved);
+        self.save_playlists();
+        self.stats.remap(moved);
+        self.stats_due = Some(self.ctx.input(|i| i.time) + 5.0);
+        self.set_library(lib);
+        self.lib.save();
+        self.lyrics.forget();
     }
 
     pub fn add_folder(&mut self) {
@@ -1077,6 +1105,10 @@ impl Nexus {
             let ext = f.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
             if ext == nexus_core::skins::SKIN_EXT || (ext == "zip" && nexus_core::skins::zip_has(&f, "skin.json")) {
                 self.import_skin(&f);
+                return;
+            }
+            if matches!(self.page, Page::Tags(_)) && nexus_core::library::is_image(&f) {
+                self.tags_drop_image(&f);
                 return;
             }
             if nexus_core::library::is_audio(&f) {

@@ -36,7 +36,6 @@ impl LyricsState {
         self.cache.get(path).cloned().flatten()
     }
 
-    #[allow(dead_code)]
     pub fn forget(&mut self) {
         self.cache.clear();
         self.order.clear();

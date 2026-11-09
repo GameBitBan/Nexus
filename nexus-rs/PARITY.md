@@ -46,15 +46,15 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] Backgrounds: image or looping video (blur, opacity, paused while minimised), cover glow
 
 ## Stage 4 — library tools & integrations
-- [ ] Tag editor (single + batch, cover drop, online album lookup)
+- [x] Tag editor (single + batch, inline cells, cover drop / paste / folder / online lookup, tools, rename files) — keeps unknown tags; FLAC/Opus/OGG/M4A/ALAC/MP3/WAV/AIFF/WV/APE/DSF
 - [ ] Import from Spotify / Apple Music exports, library matcher, rematch
 - [ ] Discover page (Deezer charts, previews, net images)
 - [ ] Internet Archive + Jamendo sources, web downloads
 - [ ] Watch folder
 - [ ] Discord Rich Presence (app id 1566983013445931018)
 - [ ] MPRIS (Linux media keys / desktop widgets)
-- [ ] OBS now-playing file
-- [ ] Updater (GitHub release digests) + offline mode / network policy
+- [x] OBS now-playing file
+- [~] Updater (GitHub release digests) + offline mode / network policy — `net.rs` done (http(s) only, size caps, proxy, system certs, offline allow-list)
 - [ ] Problem log, uncaught-error log, `--selftest`
 
 ## Stage 5 — Soulseek

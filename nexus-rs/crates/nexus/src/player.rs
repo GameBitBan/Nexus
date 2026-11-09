@@ -72,6 +72,16 @@ impl Nexus {
         self.queue_tbl.scroll_to = self.qi;
     }
 
+    /// The current song's tags or cover changed on disk.
+    pub fn now_playing_changed(&mut self) {
+        if let Some(t) = self.current_track().cloned() {
+            self.write_now_playing(&t);
+            self.ambient_key.clear();
+            self.set_ambient(&t.cover.clone());
+            self.update_gapless_next();
+        }
+    }
+
     pub fn set_ambient(&mut self, key: &str) {
         if key != self.ambient_key {
             self.ambient_old = std::mem::replace(&mut self.ambient_key, key.to_string());

@@ -9,6 +9,7 @@ pub mod lyrics;
 mod queue;
 pub mod settings;
 mod songs;
+pub mod tags;
 pub mod visualizer;
 
 use crate::app::{Nexus, Page};
@@ -32,6 +33,7 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
         Page::Visualizer => visualizer::draw(app, ui, rect),
         Page::Lyrics => lyrics::draw(app, ui, rect),
         Page::Inspect(p) => inspect::draw(app, ui, rect, p),
+        Page::Tags(p) => tags::draw(app, ui, rect, &p),
         other => coming(app, ui, rect, &other),
     }
 }
@@ -40,7 +42,6 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
 fn coming(app: &mut Nexus, ui: &mut Ui, rect: Rect, page: &Page) {
     let t = app.t.clone();
     let name = match page {
-        Page::Tags(_) => "tag editor",
         Page::Download => "download",
         Page::Discover => "discover",
         Page::Jam => "jam",

@@ -217,3 +217,61 @@ pub fn scan(folders: &[PathBuf], old: &[Arc<Track>], covers: &Path, full: bool, 
     out.sort_by_key(Track::sort_key);
     out
 }
+
+/// After the tag editor rewrote `paths`: re-reads them and refreshes the cached covers of every album
+/// they were or now are in (`covers_changed`: files whose artwork changed). Returns the new track list.
+pub fn refresh_files(old: &[Arc<Track>], paths: &[String], covers_changed: &HashSet<String>, covers: &Path) -> Vec<Track> {
+    let set: HashSet<&str> = paths.iter().map(String::as_str).collect();
+    let mut touched = HashSet::new();
+    let mut redo = HashSet::new();
+    let mut out: Vec<Track> = old
+        .iter()
+        .map(|t| {
+            if !set.contains(t.path.as_str()) {
+                return Track::clone(t);
+            }
+            touched.insert(t.album_key.clone());
+            match read_track(Path::new(&t.path)) {
+                Some(n) => {
+                    touched.insert(n.album_key.clone());
+                    if covers_changed.contains(&t.path) {
+                        redo.insert(n.album_key.clone());
+                        redo.insert(t.album_key.clone());
+                    }
+                    n
+                }
+                None => Track::clone(t),
+            }
+        })
+        .collect();
+    for key in &touched {
+        let dest = covers.join(format!("{key}.jpg"));
+        if redo.contains(key) || !dest.exists() {
+            let ok = out.iter().filter(|t| &t.album_key == key).any(|t| save_cover(Path::new(&t.path), &dest));
+            if !ok {
+                let _ = std::fs::remove_file(&dest);
+            }
+        }
+    }
+    for t in &mut out {
+        if touched.contains(&t.album_key) {
+            t.cover = if covers.join(format!("{}.jpg", t.album_key)).exists() { t.album_key.clone() } else { String::new() };
+        }
+    }
+    out.sort_by_key(Track::sort_key);
+    out
+}
+
+/// Files were renamed: point the library at the new names.
+pub fn remap_paths(old: &[Arc<Track>], moved: &HashMap<String, String>) -> Vec<Track> {
+    old.iter()
+        .map(|t| {
+            let mut t = Track::clone(t);
+            if let Some(n) = moved.get(&t.path) {
+                t.path = n.clone();
+                t.mtime = mtime_of(Path::new(n)).unwrap_or(t.mtime);
+            }
+            t
+        })
+        .collect()
+}

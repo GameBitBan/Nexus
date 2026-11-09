@@ -6,11 +6,13 @@ pub mod dsf;
 pub mod inspect;
 pub mod library;
 pub mod lyrics;
+pub mod net;
 pub mod paths;
 pub mod playlists;
 pub mod scanner;
 pub mod secret;
 pub mod skins;
+pub mod tags;
 pub mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

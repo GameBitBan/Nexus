@@ -24,6 +24,7 @@ eframe = { version = "0.37", default-features = false, features = ["glow", "wayl
 egui = "0.37"
 fontdb = "0.24"
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "wayland"] }
+arboard = { version = "3.7", features = ["wayland-data-control"] }
 open = "5"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 realfft = "3"
