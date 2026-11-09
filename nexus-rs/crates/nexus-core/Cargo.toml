@@ -28,6 +28,7 @@ rtrb = "0.3"
 realfft = "3"
 rustfft = "6"
 csv = "1"
+sha2 = "0.10"
 plist = "1"
 indexmap = { version = "2", features = ["serde"] }
 ureq = { version = "3.5", default-features = false, features = ["rustls", "platform-verifier", "json", "gzip"] }

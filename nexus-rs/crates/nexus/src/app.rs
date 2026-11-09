@@ -169,6 +169,7 @@ pub struct Nexus {
     pub presence_seen: (Option<String>, bool),
     pub discord_offer: Option<crossbeam_channel::Receiver<bool>>,
     pub media: Option<crate::media::Media>,
+    pub update_rx: Option<(crossbeam_channel::Receiver<Result<nexus_core::update::Check, String>>, bool)>,
 }
 
 impl Nexus {
@@ -272,6 +273,7 @@ impl Nexus {
             presence_due: None,
             presence_seen: (None, false),
             discord_offer: None,
+            update_rx: None,
             media: if cfg.b("mpris") { crate::media::Media::new(&cc.egui_ctx, crate::media::hwnd_of(cc)) } else { None },
             cfg,
         };
@@ -285,6 +287,9 @@ impl Nexus {
             app.rescan(false);
         }
         app.maybe_offer_discord();
+        if app.cfg.b("update_check") {
+            app.check_updates(false);
+        }
         app
     }
 
@@ -1231,6 +1236,7 @@ impl eframe::App for Nexus {
         self.discover_tick();
         self.presence_tick(now);
         self.media_tick(now);
+        self.update_tick();
         self.poll_scan();
         self.shortcuts(&ctx);
         self.handle_drops(&ctx);

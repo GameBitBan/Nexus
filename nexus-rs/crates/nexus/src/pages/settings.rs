@@ -1032,7 +1032,17 @@ fn update(app: &mut Nexus, ui: &mut Ui) {
     small(app, ui, "offline: no cover/lyrics/discover lookups, no update checks, no discord art. Soulseek and Jam still connect when you use them.");
     line(app, ui, "GitHub releases from", "update_repo", "GameBitBan/Nexus");
     line(app, ui, "custom feed (optional)", "update_url", "a version.json url");
-    later(app, ui, "Updates");
+    ui.add_space(6.0);
+    let how = match nexus_core::update::install_kind() {
+        nexus_core::update::Install::Nix => "installed with Nix: Nexus tells you about new versions, Nix installs them.",
+        nexus_core::update::Install::Dev => "development build: Nexus only tells you about new versions.",
+        nexus_core::update::Install::WindowsInstaller => "new versions download in the background, then install with one click.",
+        nexus_core::update::Install::Binary(_) => "new versions download in the background and replace this program after one click.",
+    };
+    small(app, ui, how);
+    if widgets::pill(ui, &t, "check now", Pill::Primary).clicked() {
+        app.check_updates(true);
+    }
 }
 
 fn advanced(app: &mut Nexus, ui: &mut Ui) {

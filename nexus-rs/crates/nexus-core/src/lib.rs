@@ -16,6 +16,7 @@ pub mod scanner;
 pub mod secret;
 pub mod skins;
 pub mod tags;
+pub mod update;
 pub mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

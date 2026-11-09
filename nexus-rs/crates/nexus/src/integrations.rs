@@ -123,3 +123,86 @@ impl Nexus {
         self.push_presence();
     }
 }
+
+// ------------------------------------------------------------------ updates
+
+impl Nexus {
+    pub fn check_updates(&mut self, manual: bool) {
+        if self.update_rx.is_some() {
+            return;
+        }
+        if nexus_core::net::offline() {
+            if manual {
+                self.toast("offline mode is on (settings → advanced)");
+            }
+            return;
+        }
+        if manual {
+            self.toast("checking for updates…");
+        }
+        let (repo, feed) = (self.cfg.s("update_repo"), self.cfg.s("update_url"));
+        let (tx, rx) = bounded(1);
+        let ctx = self.ctx.clone();
+        std::thread::Builder::new()
+            .name("nexus-update".into())
+            .spawn(move || {
+                if !manual {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
+                let res = nexus_core::update::check(&repo, &feed, &nexus_core::paths::data_dir().join("updates"));
+                let _ = tx.send(res);
+                ctx.request_repaint();
+            })
+            .expect("spawn update check");
+        self.update_rx = Some((rx, manual));
+    }
+
+    pub fn update_tick(&mut self) {
+        use nexus_core::update::{Check, Install, install_kind};
+        let Some((rx, manual)) = &self.update_rx else { return };
+        let manual = *manual;
+        let Ok(res) = rx.try_recv() else { return };
+        self.update_rx = None;
+        match res {
+            Ok(Check::UpToDate(v)) => {
+                if manual {
+                    self.toast(format!("you're up to date ({v})"));
+                }
+            }
+            Ok(Check::Available(v)) => {
+                let how = match install_kind() {
+                    Install::Nix => "update it through your flake / configuration",
+                    _ => "get it from the releases page",
+                };
+                self.toast_ms(format!("Nexus {v} is out — {how}"), 10.0);
+            }
+            Ok(Check::Ready(v, file)) => {
+                self.toast_action(
+                    format!("Nexus {v} is ready"),
+                    "update + restart",
+                    move |app| match nexus_core::update::apply(&file) {
+                        Ok(true) => app.restart(),
+                        Ok(false) => app.ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                        Err(e) => app.toast(format!("couldn't update: {e}")),
+                    },
+                    30.0,
+                );
+            }
+            Err(e) => {
+                if manual {
+                    self.toast(format!("update check failed: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Start a fresh copy of Nexus and close this one.
+    pub fn restart(&mut self) {
+        self.save_state();
+        crate::instance::release();
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe).arg("--restarted").spawn();
+        }
+        self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+}
