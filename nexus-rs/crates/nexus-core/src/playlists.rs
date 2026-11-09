@@ -124,6 +124,11 @@ impl Stats {
         self.map.get(path).and_then(|e| e.get("plays")).and_then(Value::as_u64).unwrap_or(0)
     }
 
+    /// Unix time of the last play (0 = never).
+    pub fn last(&self, path: &str) -> u64 {
+        self.map.get(path).and_then(|e| e.get("last")).and_then(|v| v.as_f64()).map(|v| v as u64).unwrap_or(0)
+    }
+
     pub fn count_play(&mut self, path: &str) {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let plays = self.plays(path) + 1;

@@ -654,9 +654,7 @@ pub struct AlbumInfo {
 }
 
 pub fn norm(s: &str) -> String {
-    let s = crate::util::fold(s);
-    let s: String = s.chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect();
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::util::title_norm(s)
 }
 
 /// Best match on iTunes (then Deezer).
@@ -806,7 +804,8 @@ mod tests {
 
     #[test]
     fn normalising_names() {
-        assert_eq!(norm("Beyoncé — Lemonade (Deluxe)"), "beyonce lemonade deluxe");
+        assert_eq!(norm("Beyoncé — Lemonade (Deluxe Edition)"), "beyoncé lemonade");
+        assert_eq!(norm("Song feat. Someone"), "song");
     }
 
     #[test]

@@ -1000,7 +1000,19 @@ fn discord(app: &mut Nexus, ui: &mut Ui) {
     toggle(app, ui, "show album cover", "discord_cover_lookup");
     combo(app, ui, "cover from", "discord_cover_source", &[("upload", "your own cover (exact, uploaded once to catbox.moe)"), ("online", "match it online (itunes / deezer, nothing uploaded)")]);
     line(app, ui, "fallback image asset", "discord_large_image", "nexus");
-    later(app, ui, "Discord status");
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let t = app.t.clone();
+        if widgets::pill(ui, &t, "check connection", Pill::Normal).clicked() {
+            app.discord.reset();
+            app.push_presence();
+        }
+        ui.add_space(8.0);
+        let status = app.discord.status();
+        widgets::dim(ui, &t, &status);
+        // the status changes on the Discord thread
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    });
 }
 
 fn import(app: &mut Nexus, ui: &mut Ui) {

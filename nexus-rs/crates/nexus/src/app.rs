@@ -163,6 +163,11 @@ pub struct Nexus {
     pub inspect: crate::pages::inspect::InspectState,
     pub tags: crate::pages::tags::TagState,
     pub import: crate::pages::import::ImportState,
+    pub discover: crate::pages::discover::DiscoverState,
+    pub discord: nexus_core::discord::Presence,
+    pub presence_due: Option<f64>,
+    pub presence_seen: (Option<String>, bool),
+    pub discord_offer: Option<crossbeam_channel::Receiver<bool>>,
 }
 
 impl Nexus {
@@ -261,6 +266,11 @@ impl Nexus {
             inspect: Default::default(),
             tags: Default::default(),
             import: Default::default(),
+            discover: Default::default(),
+            discord: nexus_core::discord::Presence::new(),
+            presence_due: None,
+            presence_seen: (None, false),
+            discord_offer: None,
             cfg,
         };
         app.refresh_background();
@@ -272,6 +282,7 @@ impl Nexus {
         if app.cfg.b("scan_on_startup") || app.lib.tracks.is_empty() {
             app.rescan(false);
         }
+        app.maybe_offer_discord();
         app
     }
 
@@ -312,6 +323,9 @@ impl Nexus {
         if matches!(key, "audio_device" | "exclusive_mode" | "replaygain" | "replaygain_preamp" | "gapless" | "*") {
             self.engine.set_options(playback_options(&self.cfg));
             self.update_gapless_next();
+        }
+        if key.starts_with("discord_") {
+            self.discord_setting_changed(key);
         }
         if key == "offline_mode" || key == "*" {
             nexus_core::net::set_offline(self.cfg.b("offline_mode"));
@@ -1212,6 +1226,8 @@ impl eframe::App for Nexus {
         let hidden = ctx.input(|i| i.viewport().minimized.unwrap_or(false)) && self.cfg.get("bg_video_pause_hidden").map(|v| v.as_bool() != Some(false)).unwrap_or(true);
         self.bg.pump(&ctx, hidden);
         self.poll_engine();
+        self.discover_tick();
+        self.presence_tick(now);
         self.poll_scan();
         self.shortcuts(&ctx);
         self.handle_drops(&ctx);
@@ -1237,6 +1253,8 @@ impl eframe::App for Nexus {
         }
         self.save_state();
         self.engine.stop();
+        self.preview_stop();
+        self.discord.shutdown();
         crate::instance::release();
     }
 }

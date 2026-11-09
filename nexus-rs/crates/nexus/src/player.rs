@@ -122,6 +122,7 @@ impl Nexus {
 
     pub fn seek(&mut self, secs: f64) {
         self.engine.seek(secs.clamp(0.0, self.dur.max(0.0)));
+        self.push_presence(); // move Discord's progress bar
     }
 
     pub fn next(&mut self, auto: bool) {

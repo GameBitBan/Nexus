@@ -3,6 +3,7 @@
 mod albums;
 mod browse;
 mod collection;
+pub mod discover;
 mod eq;
 pub mod import;
 pub mod inspect;
@@ -36,6 +37,7 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
         Page::Inspect(p) => inspect::draw(app, ui, rect, p),
         Page::Tags(p) => tags::draw(app, ui, rect, &p),
         Page::Import => import::draw(app, ui, rect),
+        Page::Discover => discover::draw(app, ui, rect),
         other => coming(app, ui, rect, &other),
     }
 }
@@ -45,7 +47,6 @@ fn coming(app: &mut Nexus, ui: &mut Ui, rect: Rect, page: &Page) {
     let t = app.t.clone();
     let name = match page {
         Page::Download => "download",
-        Page::Discover => "discover",
         Page::Jam => "jam",
         _ => "page",
     };

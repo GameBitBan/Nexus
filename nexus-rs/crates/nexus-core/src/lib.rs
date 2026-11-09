@@ -2,6 +2,8 @@
 
 pub mod audio;
 pub mod config;
+pub mod discord;
+pub mod discover;
 pub mod dsf;
 pub mod imports;
 pub mod inspect;

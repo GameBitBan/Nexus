@@ -83,6 +83,25 @@ pub fn fold(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Album/title matching key (Python's `DiscordPresence._norm`): drops "(Deluxe Edition)"-style tags and
+/// featured artists, lower-cases, punctuation → spaces.
+pub fn title_norm(x: &str) -> String {
+    use std::sync::LazyLock;
+    static TAGS: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)\s*[\(\[][^)\]]*(edition|deluxe|remaster|version|explicit|expanded|anniversary)[^)\]]*[\)\]]").expect("regex"));
+    static FEAT: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)\s+(?:feat\.?|ft\.?|featuring|with|&|x|,)\s+").expect("regex"));
+    let x = TAGS.replace_all(x, "");
+    let x = FEAT.split(&x).next().unwrap_or("").to_lowercase();
+    let x: String = x.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { ' ' }).collect();
+    x.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Artist matching key (Python's `_norm_name`).
+pub fn name_norm(s: &str) -> String {
+    let x: String = s.to_lowercase().replace('$', "s").chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { ' ' }).collect();
+    x.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub fn md5_hex(s: &str) -> String {
     format!("{:x}", md5::compute(s.as_bytes()))
 }
