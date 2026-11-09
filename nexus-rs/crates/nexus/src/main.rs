@@ -11,6 +11,7 @@ mod icons;
 mod instance;
 mod integrations;
 mod layout;
+mod media;
 mod netimg;
 mod nowpanel;
 mod pages;

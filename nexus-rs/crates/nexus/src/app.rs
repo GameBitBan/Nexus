@@ -168,6 +168,7 @@ pub struct Nexus {
     pub presence_due: Option<f64>,
     pub presence_seen: (Option<String>, bool),
     pub discord_offer: Option<crossbeam_channel::Receiver<bool>>,
+    pub media: Option<crate::media::Media>,
 }
 
 impl Nexus {
@@ -271,6 +272,7 @@ impl Nexus {
             presence_due: None,
             presence_seen: (None, false),
             discord_offer: None,
+            media: if cfg.b("mpris") { crate::media::Media::new(&cc.egui_ctx, crate::media::hwnd_of(cc)) } else { None },
             cfg,
         };
         app.refresh_background();
@@ -1228,6 +1230,7 @@ impl eframe::App for Nexus {
         self.poll_engine();
         self.discover_tick();
         self.presence_tick(now);
+        self.media_tick(now);
         self.poll_scan();
         self.shortcuts(&ctx);
         self.handle_drops(&ctx);
