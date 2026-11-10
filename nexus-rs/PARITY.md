@@ -63,7 +63,6 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] UPnP (igd-next), port check, Windows firewall helper, VPN detection + advice, "0 results — why" diagnosis
 - [x] Download page (grouped results, broader queries, lossless filter, auto-switch stalled albums, retry/cancel, import into the library)
 - [x] "get missing albums" from Import and Discover (auto-download best copy with backups)
-- [ ] Browse a user's shares
 
 ## Stage 6 — Jam
 - [ ] ntfy signalling with scrypt + AES-GCM (`nexusjam2` topics) — interoperable with Python Nexus
