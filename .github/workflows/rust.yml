@@ -1,0 +1,102 @@
+# Nexus 2 (Rust): build + test on every push to the rust branch.
+#  - nix: the flake builds, its tests pass, and the packaged app passes --selftest (NixOS install path)
+#  - linux: cargo test + clippy against Ubuntu's libraries
+#  - windows: release build with FFmpeg's shared libraries, --selftest, a zip ready to try
+name: rust
+
+on:
+  push:
+    branches: [rust]
+  pull_request:
+    branches: [rust]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: nix build (builds, runs nexus-core tests, runs --selftest)
+        run: nix build .#nexus -L
+      - name: selftest report
+        run: |
+          HOME=$RUNNER_TEMP NEXUS_HOME=$RUNNER_TEMP/nx ./result/bin/nexus --selftest selftest.txt || (cat selftest.txt; exit 1)
+          cat selftest.txt
+      - name: flake check
+        run: nix flake check -L --no-build
+
+  linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nexus-rs
+    steps:
+      - uses: actions/checkout@v4
+      - name: libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q pkg-config clang libclang-dev libasound2-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nexus-rs
+      - run: cargo test -p nexus-core
+      - run: cargo clippy --workspace -- -D clippy::correctness
+      - run: cargo build -p nexus
+      - run: ./target/debug/nexus --selftest selftest.txt; cat selftest.txt
+
+  windows:
+    runs-on: windows-latest
+    env:
+      FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nexus-rs
+      - name: FFmpeg (shared libraries + headers)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest $env:FFMPEG_URL -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
+          $dir = (Get-ChildItem ffmpeg-dl -Directory | Select-Object -First 1).FullName
+          "FFMPEG_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$dir\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: build
+        working-directory: nexus-rs
+        run: cargo build --release -p nexus
+      - name: package
+        shell: pwsh
+        run: |
+          $d = "dist\Nexus"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item nexus-rs\target\release\nexus.exe "$d\Nexus.exe"
+          Copy-Item "$env:FFMPEG_DIR\bin\*.dll" $d
+          Copy-Item -Recurse fonts, icons, skins $d
+          Copy-Item LICENSE, README.md $d
+      - name: selftest
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\Nexus\Nexus.exe -ArgumentList '--selftest', "$PWD\selftest.txt" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { throw "self-test failed" }
+      - name: zip
+        shell: pwsh
+        run: Compress-Archive dist\Nexus nexus2-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus2-windows-x64
+          path: nexus2-windows-x64.zip
