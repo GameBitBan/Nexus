@@ -151,10 +151,20 @@ pub fn post(url: &str, headers: &[(&str, &str)], body: &[u8], timeout: u64) -> R
     Ok((code, b))
 }
 
-/// Streams a download to `out`, calling `progress(done, total)`; `cancel` returning true stops it.
-pub fn download(url: &str, out: &mut impl std::io::Write, timeout: u64, mut progress: impl FnMut(u64, u64) -> bool) -> Result<u64, String> {
+/// Streams a download to `out`, calling `progress(done, total)`; returning false from it stops.
+pub fn download(url: &str, out: &mut impl std::io::Write, timeout: u64, progress: impl FnMut(u64, u64) -> bool) -> Result<u64, String> {
+    download_from(url, out, timeout, |_| true, progress)
+}
+
+/// Like `download`, but `allow(final_url)` must accept where redirects ended up.
+pub fn download_from(url: &str, out: &mut impl std::io::Write, timeout: u64, allow: impl Fn(&str) -> bool, mut progress: impl FnMut(u64, u64) -> bool) -> Result<u64, String> {
+    use ureq::ResponseExt;
     check(url)?;
     let resp = agent().get(url).config().timeout_global(Some(Duration::from_secs(timeout))).build().call().map_err(tidy)?;
+    let fin = resp.get_uri().to_string();
+    if !allow(&fin) {
+        return Err("redirected somewhere unexpected".into());
+    }
     let code = resp.status().as_u16();
     if !(200..300).contains(&code) {
         return Err(status_err(code));

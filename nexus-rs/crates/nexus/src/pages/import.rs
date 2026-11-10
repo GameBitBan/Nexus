@@ -24,6 +24,13 @@ pub struct ImportState {
     checks: Vec<bool>,
     use_artists: bool,
     show_missing: bool,
+    miss_checks: Vec<bool>,
+    /// albums waiting to be fetched from Soulseek, one at a time
+    dl_queue: std::collections::VecDeque<Missing>,
+    dl_active: Option<(Missing, std::sync::Arc<parking_lot::Mutex<String>>)>,
+    dl_next_at: f64,
+    dl_done: usize,
+    dl_line: String,
     status: String,
 }
 
@@ -100,6 +107,56 @@ impl Nexus {
         self.toast(msg);
     }
 
+    fn import_get_missing(&mut self) {
+        let Some(l) = &self.import.loaded else { return };
+        let chosen: Vec<Missing> = l.missing.iter().enumerate().filter(|(i, _)| self.import.miss_checks.get(*i).copied().unwrap_or(true)).map(|(_, m)| m.clone()).collect();
+        if chosen.is_empty() {
+            return;
+        }
+        let have: std::collections::HashSet<(String, String)> = self.import.dl_queue.iter().map(|m| (m.artist.clone(), m.album.clone())).collect();
+        let n0 = self.import.dl_queue.len();
+        self.import.dl_queue.extend(chosen.into_iter().filter(|m| !have.contains(&(m.artist.clone(), m.album.clone()))));
+        let n = self.import.dl_queue.len() + usize::from(self.import.dl_active.is_some());
+        if n > n0 {
+            self.toast_action(format!("getting {n} albums one by one — you can keep using Nexus"), "downloads", |a| a.go(crate::app::Page::Download, true), 6.0);
+        }
+    }
+
+    /// Every frame: fetch the queued missing albums one after another.
+    pub fn import_dl_tick(&mut self, now: f64) {
+        let st = &mut self.import;
+        if let Some((m, status)) = &st.dl_active {
+            let s = status.lock().clone();
+            if s.is_empty() || s.starts_with("searching") {
+                self.ctx.request_repaint_after(std::time::Duration::from_millis(500));
+                return;
+            }
+            st.dl_line = format!("{} — {}: {s}", m.artist, m.album);
+            st.dl_done += 1;
+            st.dl_active = None;
+            st.dl_next_at = now + 1.5;
+        }
+        if st.dl_queue.is_empty() {
+            if st.dl_done > 0 && !st.dl_line.starts_with("done looking") {
+                st.dl_line = format!("done looking: {} album{} handled. playlists fill in as downloads land in your library.", st.dl_done, if st.dl_done == 1 { "" } else { "s" });
+            }
+            return;
+        }
+        if now < st.dl_next_at {
+            self.ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            return;
+        }
+        let Some(m) = st.dl_queue.pop_front() else { return };
+        let status = std::sync::Arc::new(parking_lot::Mutex::new("searching Soulseek…".to_string()));
+        st.dl_line = format!("looking for {} — {}  ({} more after this)", m.artist, m.album, st.dl_queue.len());
+        st.dl_active = Some((m.clone(), status.clone()));
+        self.auto_download(&m.artist, &m.album, "", true, Some(status));
+        if self.import.dl_active.as_ref().is_some_and(|(_, s)| s.lock().starts_with("set up")) {
+            // no login: stop
+            self.import.dl_queue.clear();
+        }
+    }
+
     /// After a rescan: songs that arrived go into the playlists they were imported for.
     pub fn import_rematch(&mut self) {
         let n = imports::rematch(&self.lib.tracks, &mut self.playlists);
@@ -123,6 +180,7 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
                     app.import.checks = l.rows.iter().map(|(_, _, hit)| *hit > 0).collect();
                     app.import.use_artists = true;
                     app.import.show_missing = false;
+                    app.import.miss_checks = vec![true; l.missing.len()];
                     app.import.status = "pick which playlists to make, then “make playlists”. missing songs get added to them later, when they show up in your library.".into();
                     app.import.loaded = Some(l);
                 }
@@ -165,6 +223,7 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
     match act {
         1 => app.import_pick(),
         2 => app.import_apply(),
+        3 => app.import_get_missing(),
         _ => {}
     }
 }
@@ -258,9 +317,9 @@ fn results(app: &mut Nexus, ui: &mut Ui, t: &Theme) -> usize {
     let all: usize = l.rows.iter().map(|(_, i, _)| i.len()).sum();
     let hit: usize = l.rows.iter().map(|(_, _, h)| h).sum();
     let found = if all > 0 {
-        format!("{hit} of {all} songs are already in your library ({}%). {} albums are missing.", hit * 100 / all, l.missing.len())
+        format!("{hit} of {all} songs are already in your library ({}%). {} missing.", hit * 100 / all, n(l.missing.len(), "album"))
     } else {
-        format!("{} albums you don't have yet.", l.missing.len())
+        format!("{} you don't have yet.", n(l.missing.len(), "album"))
     };
     wrapped(ui, t, &t.l(&found), t.body(), c.dim);
     let mut act = 0;
@@ -292,6 +351,12 @@ fn results(app: &mut Nexus, ui: &mut Ui, t: &Theme) -> usize {
             if widgets::pill(ui, t, label, Pill::Normal).clicked() {
                 st.show_missing = !st.show_missing;
             }
+            if widgets::pill(ui, t, "get missing albums", Pill::Normal)
+                .on_hover_text(t.l("finds the albums you don't have on Soulseek and downloads them (lossless if settings → downloads says so). the playlists fill in as they arrive."))
+                .clicked()
+            {
+                act = 3;
+            }
             if widgets::pill(ui, t, "copy list", Pill::Normal).on_hover_text(t.l("copies “artist — album” lines, e.g. for a shopping list")).clicked() {
                 let text: Vec<String> = l.missing.iter().map(|m| format!("{} — {}", m.artist, m.album)).collect();
                 app.acts.push(Act::CopyText(text.join("\n")));
@@ -304,13 +369,18 @@ fn results(app: &mut Nexus, ui: &mut Ui, t: &Theme) -> usize {
             ui.set_width(ui.available_width());
             egui::ScrollArea::vertical().id_salt("import-missing").max_height(300.0).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
-                for m in l.missing.iter().take(1000) {
+                for (i, m) in l.missing.iter().take(1000).enumerate() {
                     let songs = if m.songs > 0 { format!("   ·   {} song{}", m.songs, if m.songs == 1 { "" } else { "s" }) } else { String::new() };
-                    widgets::label(ui, &format!("{}  —  {}{songs}", m.artist, m.album), t.body(), c.text, Sense::hover());
+                    if let Some(on) = st.miss_checks.get_mut(i) {
+                        ui.checkbox(on, format!("{}  —  {}{songs}", m.artist, m.album));
+                    }
                 }
             });
         });
-        widgets::small_dim(ui, t, &t.l("downloading these from Soulseek comes with the Download page."));
+        widgets::small_dim(ui, t, &t.l("untick any you don't want, then “get missing albums”."));
+    }
+    if !st.dl_line.is_empty() {
+        widgets::small_dim(ui, t, &t.l(&st.dl_line));
     }
     act
 }

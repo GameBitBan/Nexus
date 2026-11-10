@@ -41,6 +41,7 @@ fn icon() -> Option<egui::IconData> {
 }
 
 fn main() {
+    nexus_core::slsk::init_logging(&paths::data_dir().join("soulseek.log"));
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("crash: {info}\n{}", std::backtrace::Backtrace::force_capture());

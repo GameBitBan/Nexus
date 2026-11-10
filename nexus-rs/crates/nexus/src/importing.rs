@@ -64,6 +64,13 @@ impl Importing {
     }
 }
 
+impl Importing {
+    /// Rescan a moment from now (more files may be landing).
+    pub fn request_rescan(&mut self, now: f64) {
+        self.rescan_due = Some(now + 2.5);
+    }
+}
+
 impl Nexus {
     fn import_root(&mut self) -> PathBuf {
         let folders = self.cfg.strings("library_folders");

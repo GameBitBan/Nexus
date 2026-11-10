@@ -170,6 +170,7 @@ pub struct Nexus {
     pub discord_offer: Option<crossbeam_channel::Receiver<bool>>,
     pub media: Option<crate::media::Media>,
     pub importing: Option<crate::importing::Importing>,
+    pub download: crate::pages::download::DownloadState,
     pub update_rx: Option<(crossbeam_channel::Receiver<Result<nexus_core::update::Check, String>>, bool)>,
 }
 
@@ -275,6 +276,7 @@ impl Nexus {
             presence_seen: (None, false),
             discord_offer: None,
             update_rx: None,
+            download: crate::pages::download::DownloadState::new(&cc.egui_ctx),
             importing: Some(crate::importing::Importing::new(&cc.egui_ctx, cfg.s("_watch_marked"))),
             media: if cfg.b("mpris") { crate::media::Media::new(&cc.egui_ctx, crate::media::hwnd_of(cc)) } else { None },
             cfg,
@@ -290,6 +292,7 @@ impl Nexus {
         }
         app.maybe_offer_discord();
         app.watch_apply();
+        app.downloads_apply();
         if app.cfg.b("update_check") {
             app.check_updates(false);
         }
@@ -336,6 +339,9 @@ impl Nexus {
         }
         if matches!(key, "watch_folder" | "watch_enabled" | "import_root" | "library_folders" | "*") {
             self.watch_apply();
+        }
+        if key.starts_with("slsk_") || key == "library_folders" || key == "*" {
+            self.downloads_apply();
         }
         if key.starts_with("discord_") {
             self.discord_setting_changed(key);
@@ -1248,6 +1254,8 @@ impl eframe::App for Nexus {
         self.media_tick(now);
         self.update_tick();
         self.importing_tick(now);
+        self.downloads_tick(now);
+        self.import_dl_tick(now);
         self.poll_scan();
         self.shortcuts(&ctx);
         self.handle_drops(&ctx);
@@ -1274,6 +1282,8 @@ impl eframe::App for Nexus {
         self.save_state();
         self.engine.stop();
         self.preview_stop();
+        self.download.pending.save();
+        self.download.slsk.stop();
         self.discord.shutdown();
         crate::instance::release();
     }

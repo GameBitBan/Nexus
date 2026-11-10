@@ -34,6 +34,8 @@ pub struct DiscoverState {
     resume: bool,
     file: Option<std::path::PathBuf>,
     rx: Option<Receiver<PreviewResult>>,
+    /// "artist|album" → what the Soulseek fetch is doing
+    pub dl: std::collections::HashMap<String, Arc<Mutex<String>>>,
 }
 
 impl Nexus {
@@ -390,10 +392,31 @@ fn sections(app: &mut Nexus, ui: &mut Ui, t: &Theme, w: f32) -> Option<ActFn> {
                 y += line(ui, &a.title, t.font(W::Semi, 0.0), c.text, pos2(pic.left(), y), 150.0, false) + 2.0;
                 let kind = if a.kind != "album" { a.kind.as_str() } else { "" };
                 let sub: Vec<&str> = [a.artist.as_str(), a.year.as_str(), kind].into_iter().filter(|s| !s.is_empty()).collect();
-                line(ui, &sub.join(" · "), t.font(W::Regular, -1.5), c.dim, pos2(pic.left(), y), 150.0, false);
-                if resp.on_hover_text(t.l("click to copy “artist — album”")).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                let dkey = format!("{}|{}", a.artist, a.title).to_lowercase();
+                let state = app.discover.dl.get(&dkey).map(|s| s.lock().clone());
+                match &state {
+                    Some(s) => {
+                        line(ui, &format!("⤓ {s}"), t.font(W::Regular, -1.5), c.text, pos2(pic.left(), y), 150.0, false);
+                    }
+                    None => {
+                        line(ui, &sub.join(" · "), t.font(W::Regular, -1.5), c.dim, pos2(pic.left(), y), 150.0, false);
+                    }
+                }
+                if resp.hovered() && state.is_none() {
+                    ui.painter().rect_filled(pic, 8.0, alpha(Color32::BLACK, 0.35));
+                    ui.painter().text(pic.center(), egui::Align2::CENTER_CENTER, "⤓", t.font(W::Bold, 14.0), Color32::WHITE);
+                }
+                let tip = format!("download “{}” from Soulseek into your library · right-click to copy the name", a.title);
+                let resp = resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand);
+                if resp.secondary_clicked() {
                     app.acts.push(Act::CopyText(format!("{} — {}", a.artist, a.title)));
                     app.acts.push(Act::Toast("copied".into()));
+                } else if resp.clicked() && state.as_ref().is_none_or(|s| !s.starts_with("searching") && !s.starts_with("downloading")) {
+                    let (artist, album) = (a.artist.clone(), a.title.clone());
+                    let cover = discover::big_cover(if a.cover_big.is_empty() { &a.cover } else { &a.cover_big });
+                    let status = Arc::new(Mutex::new(String::new()));
+                    app.discover.dl.insert(dkey, status.clone());
+                    act = Some(Box::new(move |app: &mut Nexus| app.auto_download(&artist, &album, &cover, false, Some(status))));
                 }
             }
         });

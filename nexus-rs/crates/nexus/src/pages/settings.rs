@@ -942,9 +942,6 @@ fn sound(app: &mut Nexus, ui: &mut Ui) {
 
 // ------------------------------------------------------------------ downloads / discord / import / update / advanced
 
-fn later(app: &Nexus, ui: &mut Ui, what: &str) {
-    small(app, ui, &format!("{what} arrive{} in a later Nexus 2 build — the settings here are already shared with Nexus 1.", if what.ends_with('s') { "" } else { "s" }));
-}
 
 fn downloads(app: &mut Nexus, ui: &mut Ui) {
     widgets::eyebrow(ui, &app.t, "SOULSEEK");
@@ -968,7 +965,33 @@ fn downloads(app: &mut Nexus, ui: &mut Ui) {
     spin(app, ui, "upload slots", "slsk_upload_slots", 1, 20, 1);
     spin(app, ui, "listening port", "slsk_port", 1024, 65000, 1);
     toggle(app, ui, "open port with UPnP", "slsk_upnp");
-    later(app, ui, "Soulseek downloads");
+    folder_row(app, ui, "download to", "slsk_download_dir", "default: inside Nexus's data folder (files move into your library when done)");
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let t = app.t.clone();
+        let online = app.download.slsk.online_client().is_some();
+        if widgets::pill(ui, &t, if online { "reconnect" } else { "connect" }, Pill::Normal).clicked() {
+            let cfg = app.slsk_config();
+            app.download.slsk.configure(cfg);
+            app.download.slsk.restart();
+        }
+        ui.add_space(8.0);
+        let mut line = app.download.slsk.label();
+        if online {
+            let (folders, files) = app.download.slsk.shared_counts();
+            line += &format!(" · sharing {files} files in {folders} folders");
+            if let Some(u) = app.download.slsk.upnp_status() {
+                line += &format!(" · UPnP: {u}");
+            }
+        }
+        widgets::dim(ui, &t, &line);
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    });
+    let ups = app.download.slsk.uploads();
+    if !ups.is_empty() {
+        let txt: Vec<String> = ups.iter().rev().take(5).map(|u| format!("↑ {} · {} · {}", u.username, nexus_core::slsk::remote_split(&u.filename).1, u.state)).collect();
+        small(app, ui, &txt.join("\n"));
+    }
     ui.add_space(10.0);
     widgets::eyebrow(ui, &app.t, "IMPORTING");
     folder_row(app, ui, "import into", "import_root", "default: your first music folder");

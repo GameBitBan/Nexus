@@ -49,7 +49,7 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] Tag editor (single + batch, inline cells, cover drop / paste / folder / online lookup, tools, rename files) — keeps unknown tags; FLAC/Opus/OGG/M4A/ALAC/MP3/WAV/AIFF/WV/APE/DSF
 - [x] Import from Spotify / Apple Music / CSV / M3U exports, library matcher, rematch after scans ("get missing albums" waits for Soulseek)
 - [x] Discover page (top artists, similar artists from Deezer, previews on a second engine, missing albums, rediscover, net image cache)
-- [ ] Internet Archive + Jamendo sources, web downloads (with the Download page, stage 5)
+- [x] Internet Archive + Jamendo sources, web downloads (checksums, host checks, cover art)
 - [x] Watch folder + album zip import (Artist/Album sorting, cover art along, rescan)
 - [x] Discord Rich Presence (app id 1566983013445931018; cover upload or iTunes/Deezer match; flatpak/snap/Vesktop sockets; one-time offer)
 - [x] MPRIS (Linux media keys / desktop widgets) + Windows media overlay — new in Nexus 2
@@ -58,10 +58,12 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] Problem log (crash.log: panics, playback errors), `--selftest`
 
 ## Stage 5 — Soulseek
-- [ ] Native client: login, search, browse, download queue, resume
-- [ ] Shares + uploads, distributed network
-- [ ] UPnP, port check, firewall helper, VPN detection + advice
-- [ ] Download page (grouped results, broader queries, quality filters)
+- [x] Native client (soulseek-rs-lib, pinned): login, search, download queue, resume from partial files after a restart, re-sign-in after a dropped session / being displaced
+- [x] Shares + uploads (library + extra folders, upload slots), distributed network handled by the library
+- [x] UPnP (igd-next), port check, Windows firewall helper, VPN detection + advice, "0 results — why" diagnosis
+- [x] Download page (grouped results, broader queries, lossless filter, auto-switch stalled albums, retry/cancel, import into the library)
+- [x] "get missing albums" from Import and Discover (auto-download best copy with backups)
+- [ ] Browse a user's shares
 
 ## Stage 6 — Jam
 - [ ] ntfy signalling with scrypt + AES-GCM (`nexusjam2` topics) — interoperable with Python Nexus
