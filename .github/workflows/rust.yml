@@ -58,8 +58,6 @@ jobs:
 
   windows:
     runs-on: windows-latest
-    env:
-      FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -68,8 +66,16 @@ jobs:
           workspaces: nexus-rs
       - name: FFmpeg (shared libraries + headers)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          Invoke-WebRequest $env:FFMPEG_URL -OutFile ffmpeg.zip
+          # newest release branch the Rust bindings know (ffmpeg-sys-next 9: up to FFmpeg 8.1)
+          $assets = gh release view latest --repo BtbN/FFmpeg-Builds --json assets --jq '.assets[].name' |
+            Where-Object { $_ -match '^ffmpeg-n(\d+)\.(\d+)-latest-win64-gpl-shared-\d+\.\d+\.zip$' -and ([version]"$($Matches[1]).$($Matches[2])" -le [version]"8.1") }
+          $pick = $assets | Sort-Object { [version]($_ -replace '^ffmpeg-n(\d+\.\d+).*','$1') } | Select-Object -Last 1
+          if (-not $pick) { throw "no FFmpeg build found: $($assets -join ', ')" }
+          Write-Host "using $pick"
+          gh release download latest --repo BtbN/FFmpeg-Builds --pattern $pick --output ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
           $dir = (Get-ChildItem ffmpeg-dl -Directory | Select-Object -First 1).FullName
           "FFMPEG_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append

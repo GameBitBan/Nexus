@@ -134,18 +134,39 @@ impl TableState {
     }
 }
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq)]
 enum SortKey {
     N(f64),
     S(String),
     F(String, u32, u32),
 }
 
+impl SortKey {
+    fn rank(&self) -> u8 {
+        match self {
+            SortKey::N(_) => 0,
+            SortKey::S(_) => 1,
+            SortKey::F(..) => 2,
+        }
+    }
+}
+
 impl Eq for SortKey {}
 
 impl Ord for SortKey {
     fn cmp(&self, o: &Self) -> std::cmp::Ordering {
-        self.partial_cmp(o).unwrap_or(std::cmp::Ordering::Equal)
+        match (self, o) {
+            (SortKey::N(a), SortKey::N(b)) => a.total_cmp(b),
+            (SortKey::S(a), SortKey::S(b)) => a.cmp(b),
+            (SortKey::F(a, x, y), SortKey::F(b, p, q)) => (a, x, y).cmp(&(b, p, q)),
+            _ => self.rank().cmp(&o.rank()),
+        }
+    }
+}
+
+impl PartialOrd for SortKey {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
     }
 }
 
