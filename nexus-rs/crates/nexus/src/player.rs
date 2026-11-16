@@ -7,11 +7,18 @@ use nexus_core::library::Track;
 use std::sync::Arc;
 
 impl Nexus {
+    /// What's playing for you: your own song, or the host's while listening along in a jam.
     pub fn current_track(&self) -> Option<&Arc<Track>> {
+        if self.jam_guest() {
+            return self.jam.track.as_ref();
+        }
         self.qi.and_then(|i| self.queue.get(i))
     }
 
     pub fn playing(&self) -> bool {
+        if self.jam_guest() {
+            return self.jam.np.as_ref().is_some_and(|n| n.playing) && !self.jam_paused();
+        }
         self.engine.state() == State::Playing
     }
 
@@ -70,6 +77,7 @@ impl Nexus {
         self.write_now_playing(t);
         self.set_ambient(&t.cover.clone());
         self.queue_tbl.scroll_to = self.qi;
+        self.jam_track_changed();
     }
 
     /// The current song's tags or cover changed on disk.
@@ -104,6 +112,10 @@ impl Nexus {
     }
 
     pub fn toggle_play(&mut self) {
+        if self.jam_guest() {
+            self.jam_toggle_pause();
+            return;
+        }
         match self.engine.state() {
             State::Playing => self.engine.pause(),
             State::Paused if self.current_track().is_some() => self.engine.play(),
@@ -121,11 +133,28 @@ impl Nexus {
     }
 
     pub fn seek(&mut self, secs: f64) {
+        if self.jam_guest() {
+            let h = self.jam_host_label();
+            self.toast_ms(format!("only {h} can skip around in the song"), 2.5);
+            return;
+        }
         self.engine.seek(secs.clamp(0.0, self.dur.max(0.0)));
         self.push_presence(); // move Discord's progress bar
     }
 
     pub fn next(&mut self, auto: bool) {
+        if self.jam_guest() {
+            if !auto {
+                let h = self.jam_host_label();
+                if self.jam.perm_skip {
+                    self.jam.jam.send(&serde_json::json!({"t": "skip"}), None, None);
+                    self.toast_ms(format!("asked {h} to skip"), 2.0);
+                } else {
+                    self.toast_ms(format!("only {h} can skip — they can let listeners skip on their jam page"), 3.5);
+                }
+            }
+            return;
+        }
         if self.queue.is_empty() {
             return;
         }
@@ -151,6 +180,11 @@ impl Nexus {
     }
 
     pub fn prev(&mut self) {
+        if self.jam_guest() {
+            let h = self.jam_host_label();
+            self.toast_ms(format!("only {h} can go back"), 2.5);
+            return;
+        }
         if self.queue.is_empty() {
             return;
         }
@@ -261,6 +295,7 @@ impl Nexus {
         self.cfg.set("volume", v);
         let gain = if v <= 1.0 { v * v } else { v };
         self.engine.set_volume(gain as f32);
+        self.jam.jam.ctl.set_volume(self.jam_gain());
     }
 
     fn peek_next(&self) -> Option<Arc<Track>> {

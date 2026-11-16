@@ -8,7 +8,7 @@ use crate::table::TableState;
 use crate::theme::{self, SystemFonts, Theme};
 use crossbeam_channel::{Receiver, unbounded};
 use egui::Context;
-use nexus_core::audio::{Engine, EqSettings, Event, PlaybackOptions, ReplayGain, State};
+use nexus_core::audio::{Engine, EqSettings, Event, PlaybackOptions, ReplayGain};
 use nexus_core::config::Config;
 use nexus_core::library::{AlbumSort, Library, Track};
 use nexus_core::playlists::{Playlists, Stats};
@@ -172,6 +172,7 @@ pub struct Nexus {
     pub importing: Option<crate::importing::Importing>,
     pub download: crate::pages::download::DownloadState,
     pub update_rx: Option<(crossbeam_channel::Receiver<Result<nexus_core::update::Check, String>>, bool)>,
+    pub jam: crate::jam::JamState,
 }
 
 impl Nexus {
@@ -276,6 +277,7 @@ impl Nexus {
             presence_seen: (None, false),
             discord_offer: None,
             update_rx: None,
+            jam: crate::jam::JamState::new(cfg.s("jam_name")),
             download: crate::pages::download::DownloadState::new(&cc.egui_ctx),
             importing: Some(crate::importing::Importing::new(&cc.egui_ctx, cfg.s("_watch_marked"))),
             media: if cfg.b("mpris") { crate::media::Media::new(&cc.egui_ctx, crate::media::hwnd_of(cc)) } else { None },
@@ -909,7 +911,11 @@ impl Nexus {
             Act::SeekFrac(f) => self.seek(f64::from(f) * self.dur),
             Act::ToggleShuffle => self.toggle_shuffle(),
             Act::CycleRepeat => self.cycle_repeat(),
-            Act::ToggleMute => self.engine.set_muted(!self.engine.muted()),
+            Act::ToggleMute => {
+                let m = !self.engine.muted();
+                self.engine.set_muted(m);
+                self.jam.jam.ctl.muted.store(m, Ordering::Relaxed);
+            }
             Act::SetVolume(v) => self.set_volume(v),
             Act::TogglePanel => {
                 let on = !self.cfg.b("now_panel");
@@ -1190,6 +1196,7 @@ impl Nexus {
 
     fn update_title(&mut self) {
         let title = match self.current_track() {
+            Some(t) if self.jam_guest() => format!("{} — {}  ·  jam with {}", t.title, t.artist, self.jam_host_label()),
             Some(t) => format!("{} — {}", t.title, t.artist),
             None => "Nexus".to_string(),
         };
@@ -1201,7 +1208,7 @@ impl Nexus {
 
     /// How soon the next frame is needed: the clock, the spinning record, visualizers.
     fn schedule(&mut self, now: f64) {
-        let playing = self.engine.state() == State::Playing;
+        let playing = self.playing();
         if self.vis_wanted && (playing || self.analyzer.active()) {
             self.ctx.request_repaint_after(std::time::Duration::from_millis(16));
         } else if playing {
@@ -1249,6 +1256,7 @@ impl eframe::App for Nexus {
         let hidden = ctx.input(|i| i.viewport().minimized.unwrap_or(false)) && self.cfg.get("bg_video_pause_hidden").map(|v| v.as_bool() != Some(false)).unwrap_or(true);
         self.bg.pump(&ctx, hidden);
         self.poll_engine();
+        self.jam_tick(now);
         self.discover_tick();
         self.presence_tick(now);
         self.media_tick(now);
@@ -1259,7 +1267,7 @@ impl eframe::App for Nexus {
         self.poll_scan();
         self.shortcuts(&ctx);
         self.handle_drops(&ctx);
-        if self.engine.state() == State::Playing && self.cfg.b("dial_spin") {
+        if self.playing() && self.cfg.b("dial_spin") {
             let secs = (self.cfg.f("dial_spin_seconds") as f32).max(2.0);
             self.dial_angle = (self.dial_angle + dt * 360.0 / secs) % 360.0;
         }
@@ -1285,6 +1293,8 @@ impl eframe::App for Nexus {
         self.download.pending.save();
         self.download.slsk.stop();
         self.discord.shutdown();
+        self.engine.set_tap(None);
+        self.jam.jam.shutdown();
         crate::instance::release();
     }
 }

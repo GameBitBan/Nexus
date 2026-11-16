@@ -34,6 +34,13 @@ igd-next = "0.18"
 plist = "1"
 indexmap = { version = "2", features = ["serde"] }
 ureq = { version = "3.5", default-features = false, features = ["rustls", "platform-verifier", "json", "gzip"] }
+webrtc = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+bytes = "1"
+scrypt = { version = "0.12", default-features = false }
+aes-gcm = "0.11"
+flate2 = "1"
+getrandom = "0.3"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]

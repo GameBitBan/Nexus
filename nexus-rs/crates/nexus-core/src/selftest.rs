@@ -30,6 +30,22 @@ pub fn run() -> (String, bool) {
             lines.push(format!("FAIL  ffmpeg: {e}"));
         }
     }
+    // Jam: Opus encoding (libopus, or FFmpeg's own) and the jam's crypto
+    match crate::jam::audio::OpusEncoder::new() {
+        Ok(mut e) => {
+            let lib = if ffmpeg_next::encoder::find_by_name("libopus").is_some() { "libopus" } else { "ffmpeg's own opus" };
+            let pkt = e.encode(&[0.0; crate::jam::audio::FRAME * 2]);
+            ok &= !pkt.is_empty();
+            lines.push(format!("{}  jam audio ({lib})", if pkt.is_empty() { "FAIL" } else { "ok  " }));
+        }
+        Err(e) => {
+            ok = false;
+            lines.push(format!("FAIL  jam audio: {e}"));
+        }
+    }
+    let sealed = crate::jam::Crypto::new("AAA-AAA").map(|c| c.open(&c.seal(&serde_json::json!({"k": 1}))).is_some()).unwrap_or(false);
+    ok &= sealed;
+    lines.push(format!("{}  jam crypto", if sealed { "ok  " } else { "FAIL" }));
     // audio output (informational: build machines often have no sound card)
     let devs = crate::audio::list_devices();
     lines.push(format!("info  audio outputs: {}", if devs.is_empty() { "none found".to_string() } else { devs.join(", ") }));

@@ -19,7 +19,7 @@ pub const STYLES: [&str; 5] = ["dots", "bars", "mirror", "wave", "ring"];
 pub fn tick(app: &mut Nexus, ui: &Ui) {
     app.vis_wanted = true;
     let playing = app.playing();
-    let samples = if playing { Some((app.engine.vis_samples(2048), app.engine.sample_rate())) } else { None };
+    let samples = if playing { Some(app.vis_source(2048)) } else { None };
     let now = ui.input(|i| i.time);
     let sens = (app.cfg.f("vis_sensitivity") as f32) / 100.0;
     app.analyzer.tick(now, samples, sens);

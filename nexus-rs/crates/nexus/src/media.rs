@@ -69,10 +69,12 @@ impl Nexus {
             };
         }
         // play state + position (MPRIS readers poll the position, so keep it fresh while playing)
-        let st = match (cur.is_some(), self.engine.state()) {
-            (false, _) | (_, nexus_core::audio::State::Stopped) => 0u8,
-            (_, nexus_core::audio::State::Paused) => 1,
-            (_, nexus_core::audio::State::Playing) => 2,
+        let st = match (cur.is_some(), self.jam_guest(), self.engine.state()) {
+            (false, _, _) => 0u8,
+            (true, true, _) => if self.playing() { 2 } else { 1 },
+            (_, _, nexus_core::audio::State::Stopped) => 0,
+            (_, _, nexus_core::audio::State::Paused) => 1,
+            (_, _, nexus_core::audio::State::Playing) => 2,
         };
         let pos_s = self.pos.max(0.0) as i64;
         let jumped = st == 2 && (pos_s - m.state.1).abs() > 2;
@@ -89,10 +91,14 @@ impl Nexus {
         if st == 2 {
             self.ctx.request_repaint_after(Duration::from_millis(1000));
         }
-        let vol = self.cfg.f("volume");
-        if (vol - m.volume).abs() > 0.001 {
-            m.volume = vol;
-            let _ = m.controls.set_volume(vol);
+        // only MPRIS carries a volume
+        #[cfg(target_os = "linux")]
+        {
+            let vol = self.cfg.f("volume");
+            if (vol - m.volume).abs() > 0.001 {
+                m.volume = vol;
+                let _ = m.controls.set_volume(vol);
+            }
         }
         self.media = Some(m);
         for ev in events {

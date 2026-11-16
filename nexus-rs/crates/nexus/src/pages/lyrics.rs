@@ -36,6 +36,14 @@ impl LyricsState {
         self.cache.get(path).cloned().flatten()
     }
 
+    /// Lyrics that came from elsewhere (the jam host).
+    pub fn put(&mut self, key: &str, l: Option<Lyrics>) {
+        if !self.cache.contains_key(key) {
+            self.order.push_back(key.to_string());
+        }
+        self.cache.insert(key.to_string(), l);
+    }
+
     pub fn forget(&mut self) {
         self.cache.clear();
         self.order.clear();

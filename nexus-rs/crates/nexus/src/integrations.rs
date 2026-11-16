@@ -60,7 +60,7 @@ impl Nexus {
 
     /// Every frame: notice play/pause/track changes, send due updates, the one-time offer.
     pub fn presence_tick(&mut self, now: f64) {
-        let seen = (self.current_path.clone(), self.playing());
+        let seen = (self.current_track().map(|t| t.path.clone()), self.playing());
         if seen != self.presence_seen {
             self.presence_seen = seen;
             self.push_presence();

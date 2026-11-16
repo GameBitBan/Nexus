@@ -124,7 +124,7 @@ fn dial(app: &mut Nexus, ui: &mut Ui, s: f32) {
     let mut lv = Vec::new();
     if dance {
         app.vis_wanted = true;
-        let samples = if playing { Some((app.engine.vis_samples(2048), app.engine.sample_rate())) } else { None };
+        let samples = if playing { Some(app.vis_source(2048)) } else { None };
         let now = ui.input(|i| i.time);
         app.analyzer.tick(now, samples, (app.cfg.f("vis_sensitivity") as f32) / 100.0);
         let half = resample(&app.analyzer.bands, n / 2 + 1);

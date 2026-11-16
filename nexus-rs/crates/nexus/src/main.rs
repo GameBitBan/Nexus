@@ -11,6 +11,7 @@ mod icons;
 mod importing;
 mod instance;
 mod integrations;
+mod jam;
 mod layout;
 mod media;
 mod netimg;

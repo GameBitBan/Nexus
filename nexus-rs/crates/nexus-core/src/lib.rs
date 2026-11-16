@@ -9,6 +9,7 @@ pub mod dsf;
 pub mod importer;
 pub mod imports;
 pub mod inspect;
+pub mod jam;
 pub mod library;
 pub mod lyrics;
 pub mod net;

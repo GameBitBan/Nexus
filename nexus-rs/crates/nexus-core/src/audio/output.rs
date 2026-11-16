@@ -103,25 +103,48 @@ fn open(shared: &Arc<Shared>, rate: u32, device: &str, exclusive: bool) -> Resul
         }
     }
     let _ = exclusive;
+    let mut renderer = Renderer::new(shared.clone());
+    let lost = shared.clone();
+    let (stream, actual, info) = open_stereo(
+        device,
+        rate,
+        move |buf| renderer.render(buf),
+        move || lost.device_lost.store(true, Ordering::SeqCst),
+    )?;
+    *shared.out_info.lock() = info;
+    shared.rate.store(actual, Ordering::SeqCst);
+    Ok((stream, actual))
+}
+
+/// Opens an output for a plain stereo source: `render` fills interleaved stereo f32 blocks.
+/// `device` is a name from `list_devices` ("" = the default), or `file:<path>` to append raw f32 to a
+/// file in real time (tests). Runs at `want` Hz when the device can, else at its default rate.
+/// Returns the stream (dropping it stops the sound), the rate it runs at and a description.
+pub(crate) fn open_stereo(
+    device: &str,
+    want: u32,
+    render: impl FnMut(&mut [f32]) -> usize + Send + 'static,
+    on_lost: impl Fn() + Send + 'static,
+) -> Result<(Box<dyn std::any::Any>, u32, OutputInfo), String> {
     if let Some(path) = device.strip_prefix("file:") {
-        return open_file(shared, rate, path);
+        return open_file(path, want, render);
     }
-    open_cpal(shared, rate, device)
+    open_cpal(want, device, render, on_lost)
 }
 
 /// Test output: renders in real time (512-frame blocks) and appends what was played to a raw f32 file.
-fn open_file(shared: &Arc<Shared>, rate: u32, path: &str) -> Result<(Box<dyn std::any::Any>, u32), String> {
+fn open_file(path: &str, rate: u32, mut render: impl FnMut(&mut [f32]) -> usize + Send + 'static) -> Result<(Box<dyn std::any::Any>, u32, OutputInfo), String> {
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (s2, stop2) = (shared.clone(), stop.clone());
+    let stop2 = stop.clone();
     std::thread::spawn(move || {
-        let mut r = Renderer::new(s2);
         let mut buf = vec![0.0f32; 1024];
         let block = std::time::Duration::from_secs_f64(512.0 / f64::from(rate));
         let mut next = std::time::Instant::now();
         while !stop2.load(Ordering::SeqCst) {
-            let n = r.render(&mut buf);
+            buf.fill(0.0);
+            let n = render(&mut buf).min(buf.len() / 2);
             if n > 0 {
                 let bytes: Vec<u8> = buf[..n * 2].iter().flat_map(|x| x.to_le_bytes()).collect();
                 let _ = file.write_all(&bytes);
@@ -138,9 +161,8 @@ fn open_file(shared: &Arc<Shared>, rate: u32, path: &str) -> Result<(Box<dyn std
             self.0.store(true, Ordering::SeqCst);
         }
     }
-    *shared.out_info.lock() = OutputInfo { device: format!("file {path}"), rate, channels: 2, format: "f32".into(), exclusive: false, native_rate: true };
-    shared.rate.store(rate, Ordering::SeqCst);
-    Ok((Box::new(StopOnDrop(stop)), rate))
+    let info = OutputInfo { device: format!("file {path}"), rate, channels: 2, format: "f32".into(), exclusive: false, native_rate: true };
+    Ok((Box::new(StopOnDrop(stop)), rate, info))
 }
 
 fn find_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
@@ -154,7 +176,12 @@ fn find_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
     host.default_output_device()
 }
 
-fn open_cpal(shared: &Arc<Shared>, want: u32, device: &str) -> Result<(Box<dyn std::any::Any>, u32), String> {
+fn open_cpal(
+    want: u32,
+    device: &str,
+    render: impl FnMut(&mut [f32]) -> usize + Send + 'static,
+    on_lost: impl Fn() + Send + 'static,
+) -> Result<(Box<dyn std::any::Any>, u32, OutputInfo), String> {
     let host = cpal::default_host();
     let dev = find_device(&host, device).ok_or("no audio output device")?;
     let name = dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "default".into());
@@ -184,36 +211,31 @@ fn open_cpal(shared: &Arc<Shared>, want: u32, device: &str) -> Result<(Box<dyn s
     let config: StreamConfig = supported.config();
     let actual = config.sample_rate;
     let stream = match fmt {
-        SampleFormat::F32 => build::<f32>(&dev, &config, shared.clone()),
-        SampleFormat::I32 => build::<i32>(&dev, &config, shared.clone()),
-        SampleFormat::I16 => build::<i16>(&dev, &config, shared.clone()),
-        SampleFormat::I24 => build::<cpal::I24>(&dev, &config, shared.clone()),
-        SampleFormat::U16 => build::<u16>(&dev, &config, shared.clone()),
-        SampleFormat::F64 => build::<f64>(&dev, &config, shared.clone()),
+        SampleFormat::F32 => build::<f32>(&dev, &config, render, on_lost),
+        SampleFormat::I32 => build::<i32>(&dev, &config, render, on_lost),
+        SampleFormat::I16 => build::<i16>(&dev, &config, render, on_lost),
+        SampleFormat::I24 => build::<cpal::I24>(&dev, &config, render, on_lost),
+        SampleFormat::U16 => build::<u16>(&dev, &config, render, on_lost),
+        SampleFormat::F64 => build::<f64>(&dev, &config, render, on_lost),
         other => return Err(format!("unsupported sample format {other}")),
     }
     .map_err(|e| format!("{name}: {e}"))?;
     stream.play().map_err(|e| format!("{name}: {e}"))?;
-    *shared.out_info.lock() = OutputInfo {
-        device: name,
-        rate: actual,
-        channels: config.channels,
-        format: format!("{fmt}"),
-        exclusive: false,
-        native_rate: actual == want,
-    };
-    shared.rate.store(actual, Ordering::SeqCst);
-    Ok((Box::new(stream), actual))
+    let info = OutputInfo { device: name, rate: actual, channels: config.channels, format: format!("{fmt}"), exclusive: false, native_rate: actual == want };
+    Ok((Box::new(stream), actual, info))
 }
 
-fn build<T>(dev: &cpal::Device, config: &StreamConfig, shared: Arc<Shared>) -> Result<cpal::Stream, cpal::Error>
+fn build<T>(
+    dev: &cpal::Device,
+    config: &StreamConfig,
+    mut render: impl FnMut(&mut [f32]) -> usize + Send + 'static,
+    on_lost: impl Fn() + Send + 'static,
+) -> Result<cpal::Stream, cpal::Error>
 where
     T: SizedSample + FromSample<f32>,
 {
     let channels = config.channels as usize;
-    let mut renderer = Renderer::new(shared.clone());
     let mut stereo: Vec<f32> = vec![0.0; 16384 * 2];
-    let lost = shared.clone();
     dev.build_output_stream(
         config.clone(),
         move |data: &mut [T], _| {
@@ -222,7 +244,7 @@ where
                 stereo.resize(frames * 2, 0.0);
             }
             let buf = &mut stereo[..frames * 2];
-            renderer.render(buf);
+            render(buf);
             for (i, frame) in data.chunks_mut(channels).enumerate() {
                 let (l, r) = (buf[i * 2], buf[i * 2 + 1]);
                 match channels {
@@ -240,7 +262,7 @@ where
         move |err: cpal::Error| {
             log::warn!("audio device: {err}");
             if matches!(err.kind(), cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::DeviceChanged) {
-                lost.device_lost.store(true, Ordering::SeqCst);
+                on_lost();
             }
         },
         None,

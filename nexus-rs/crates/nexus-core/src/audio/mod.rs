@@ -14,6 +14,7 @@ mod wasapi_exclusive;
 
 pub use eq::EqSettings;
 pub use output::{list_devices, OutputInfo};
+pub(crate) use output::open_stereo;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use parking_lot::Mutex;

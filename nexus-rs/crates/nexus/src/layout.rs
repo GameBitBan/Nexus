@@ -245,9 +245,11 @@ fn nav_rail(app: &mut Nexus, ui: &mut Ui, r: Rect) {
     let inner = r.shrink(12.0);
     let t = app.t.clone();
     let cur = app.page.nav_key();
+    let jam_tip = app.jam_nav_tip();
     region(ui, inner, Layout::top_down(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
         for (key, icon, tip) in NAV_ITEMS {
+            let tip = if key == "jam" && !jam_tip.is_empty() { jam_tip.as_str() } else { tip };
             let resp = icon_button(ui, &t, icon, 44.0, IconOpts { rail: true, active: cur == key, ..Default::default() });
             if resp.on_hover_text(tip).clicked() {
                 app.acts.push(Act::Go(page_for(key)));
@@ -338,7 +340,9 @@ fn tabs_shell(app: &mut Nexus, ui: &mut Ui, body: Rect) {
             app.acts.push(Act::Back);
         }
         ui.add_space(6.0);
+        let jam_tip = app.jam_nav_tip();
         for (key, icon, tip) in NAV_ITEMS {
+            let tip = if key == "jam" && !jam_tip.is_empty() { jam_tip.as_str() } else { tip };
             if icon_button(ui, &t, icon, 40.0, IconOpts { rail: true, active: cur == key, ..Default::default() }).on_hover_text(tip).clicked() {
                 app.acts.push(Act::Go(page_for(key)));
             }
@@ -572,25 +576,31 @@ fn npbar(app: &mut Nexus, ui: &mut Ui, bar: Rect, classic: bool, mini: bool) {
     let ctrl = Rect::from_min_size(center.min, vec2(center.width(), ctrl_h));
     let shuffle = app.cfg.b("shuffle");
     let repeat = app.cfg.s("repeat");
+    let guest = app.jam_guest();
+    let (play_tip, next_tip) = if guest {
+        ("pause just for you (the jam keeps going)  (space)", if app.jam.perm_skip { "ask the host to skip" } else { "only the host can skip" })
+    } else {
+        ("play / pause  (space)", "next")
+    };
     region(ui, ctrl, Layout::left_to_right(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 14.0;
         let total: f32 = if t.text_controls { 5.0 * 46.0 } else { 30.0 + 32.0 + 40.0 + 32.0 + 30.0 } + 4.0 * 14.0;
         ui.add_space(((ctrl.width() - total) / 2.0).max(0.0));
-        if icon_button(ui, &t, Icon::Shuffle, 30.0, IconOpts { active: shuffle, ..Default::default() }).on_hover_text("shuffle  (ctrl+s)").clicked() {
+        if icon_button(ui, &t, Icon::Shuffle, 30.0, IconOpts { active: shuffle, disabled: guest, ..Default::default() }).on_hover_text("shuffle  (ctrl+s)").clicked() && !guest {
             app.acts.push(Act::ToggleShuffle);
         }
-        if icon_button(ui, &t, Icon::Prev, 32.0, IconOpts::default()).on_hover_text("previous").clicked() {
+        if icon_button(ui, &t, Icon::Prev, 32.0, IconOpts { disabled: guest, ..Default::default() }).on_hover_text("previous").clicked() {
             app.acts.push(Act::Prev);
         }
         let pi = if playing { Icon::Pause } else { Icon::Play };
-        if icon_button(ui, &t, pi, 40.0, IconOpts::default()).on_hover_text("play / pause  (space)").clicked() {
+        if icon_button(ui, &t, pi, 40.0, IconOpts::default()).on_hover_text(play_tip).clicked() {
             app.acts.push(Act::TogglePlay);
         }
-        if icon_button(ui, &t, Icon::Next, 32.0, IconOpts::default()).on_hover_text("next").clicked() {
+        if icon_button(ui, &t, Icon::Next, 32.0, IconOpts { disabled: guest && !app.jam.perm_skip, ..Default::default() }).on_hover_text(next_tip).clicked() {
             app.acts.push(Act::Next);
         }
         let ri = if repeat == "one" { Icon::RepeatOne } else { Icon::Repeat };
-        if icon_button(ui, &t, ri, 30.0, IconOpts { active: repeat != "off", ..Default::default() }).on_hover_text("repeat  (ctrl+r)").clicked() {
+        if icon_button(ui, &t, ri, 30.0, IconOpts { active: repeat != "off", disabled: guest, ..Default::default() }).on_hover_text("repeat  (ctrl+r)").clicked() && !guest {
             app.acts.push(Act::CycleRepeat);
         }
     });
@@ -658,8 +668,9 @@ fn npbar(app: &mut Nexus, ui: &mut Ui, bar: Rect, classic: bool, mini: bool) {
         if icon_button(ui, &t, Icon::Panel, 30.0, IconOpts { active: panel_on, ..Default::default() }).on_hover_text("now playing panel").clicked() {
             app.acts.push(Act::TogglePanel);
         }
-        if icon_button(ui, &t, Icon::Queue, 30.0, IconOpts { active: page == Page::Queue, ..Default::default() }).on_hover_text("queue").clicked() {
-            app.acts.push(Act::Go(Page::Queue));
+        let (qpage, qtip) = if app.jam_guest() { (Page::Jam, "the jam's queue") } else { (Page::Queue, "queue") };
+        if icon_button(ui, &t, Icon::Queue, 30.0, IconOpts { active: page == qpage, ..Default::default() }).on_hover_text(qtip).clicked() {
+            app.acts.push(Act::Go(qpage));
         }
         if icon_button(ui, &t, Icon::Eq, 30.0, IconOpts { active: eq_on || page == Page::Eq, ..Default::default() }).on_hover_text("equalizer  (ctrl+e)").clicked() {
             app.acts.push(Act::OpenEq);

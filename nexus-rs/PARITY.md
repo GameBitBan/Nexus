@@ -65,10 +65,11 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] "get missing albums" from Import and Discover (auto-download best copy with backups)
 
 ## Stage 6 — Jam
-- [ ] ntfy signalling with scrypt + AES-GCM (`nexusjam2` topics) — interoperable with Python Nexus
-- [ ] WebRTC audio (Opus) host → guests, sync, latency
-- [ ] Guest controls (local pause, volume, position), host queue/state
-- [ ] Song / album requests and file transfer (size limits, allow/decline)
+- [x] ntfy signalling with scrypt + AES-GCM (`nexusjam2` topics) — interoperable with Python Nexus (tested both ways: Python host → Rust guest, Rust host → Python guest)
+- [x] WebRTC (webrtc-rs) audio: the engine's tap → 48 kHz Opus 320 kbps (libopus via FFmpeg) → up to 4 guests; guests buffer 0.3 s, catch up when behind
+- [x] Guest controls (pause just for me, own volume / mute, skip if allowed), host's song in the bar / now panel / lyrics / visualizer / Discord / MPRIS
+- [x] Chat, shared queue (add from the host's library), host permissions (add / skip / download), remove a listener
+- [x] Song / album requests and file transfer (ask / always / never, size and type limits, only expected transfers, straight into the library)
 
 ## Stage 7 — packaging
 - [ ] Nix flake: package, dev shell, NixOS module-free install (desktop file, icon, MPRIS)
