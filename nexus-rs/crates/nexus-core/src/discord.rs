@@ -158,13 +158,12 @@ fn open() -> Option<Conn> {
     for p in candidates() {
         #[cfg(unix)]
         {
-            if p.exists() {
-                if let Ok(s) = std::os::unix::net::UnixStream::connect(&p) {
+            if p.exists()
+                && let Ok(s) = std::os::unix::net::UnixStream::connect(&p) {
                     let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
                     let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
                     return Some(Conn::Sock(s));
                 }
-            }
         }
         #[cfg(not(unix))]
         {
@@ -280,8 +279,8 @@ impl Worker {
         let (_, msg) = recv(c)?;
         if msg.get("evt").and_then(Value::as_str) == Some("ERROR") {
             let err = msg.pointer("/data/message").and_then(Value::as_str).unwrap_or("").to_string();
-            if let Some(mut a) = activity {
-                if self.sdt_ok && a.get("status_display_type").is_some() {
+            if let Some(mut a) = activity
+                && self.sdt_ok && a.get("status_display_type").is_some() {
                     // older Discord: try again without the newer field
                     self.sdt_ok = false;
                     if let Some(o) = a.as_object_mut() {
@@ -289,7 +288,6 @@ impl Worker {
                     }
                     return self.set(Some(a));
                 }
-            }
             return Err(std::io::Error::other(format!("discord rejected the status: {err}")));
         }
         Ok(())
@@ -373,11 +371,10 @@ impl Worker {
                         }
                     }
                 }
-                if !self.sdt_ok {
-                    if let Some(o) = act.as_object_mut() {
+                if !self.sdt_ok
+                    && let Some(o) = act.as_object_mut() {
                         o.remove("status_display_type");
                     }
-                }
                 let details = act.get("details").and_then(Value::as_str).unwrap_or("").trim().to_string();
                 self.set(Some(act))?;
                 Ok(Some(details))

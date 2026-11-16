@@ -23,7 +23,6 @@ pub enum Act {
     TogglePlay,
     Next,
     Prev,
-    Seek(f64),
     SeekFrac(f32),
     ToggleShuffle,
     CycleRepeat,

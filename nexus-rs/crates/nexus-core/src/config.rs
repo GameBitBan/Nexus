@@ -47,12 +47,11 @@ impl Config {
         if self.path.as_os_str().is_empty() {
             return;
         }
-        if let Some(Value::String(pw)) = self.values.get("slsk_password") {
-            if !pw.is_empty() && !pw.starts_with("dpapi:") {
+        if let Some(Value::String(pw)) = self.values.get("slsk_password")
+            && !pw.is_empty() && !pw.starts_with("dpapi:") {
                 let p = crate::secret::protect(pw);
                 self.values.insert("slsk_password".into(), Value::String(p));
             }
-        }
         if let Err(e) = save_json(&self.path, &self.values) {
             log::error!("saving config: {e}");
         }

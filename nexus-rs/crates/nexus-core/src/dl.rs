@@ -316,7 +316,7 @@ mod tests {
             queue: 0,
             files: vec![f("M\\A\\Al\\01.flac", Some(16)), f("M\\A\\Al\\02.flac", Some(16)), f("M\\A\\Al\\cover.jpg", None), f("M\\B\\x.mp3", None)],
         };
-        let rows = group_results(&[r.clone()], true);
+        let rows = group_results(std::slice::from_ref(&r), true);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].fmt, "FLAC 16/44.1");
         assert_eq!(rows[0].images.len(), 1);

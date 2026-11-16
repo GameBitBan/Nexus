@@ -27,13 +27,11 @@ pub fn tick(app: &mut Nexus, ui: &Ui) {
 
 /// The colour to draw with: the theme's text colour, or one picked from the cover.
 pub fn vis_color(app: &mut Nexus) -> Color32 {
-    if app.cfg.s("vis_color") == "cover" {
-        if let Some(k) = app.current_track().map(|t| t.cover.clone()) {
-            if let Some(c) = app.covers.color(&k) {
+    if app.cfg.s("vis_color") == "cover"
+        && let Some(k) = app.current_track().map(|t| t.cover.clone())
+            && let Some(c) = app.covers.color(&k) {
                 return c;
             }
-        }
-    }
     app.t.c.text
 }
 

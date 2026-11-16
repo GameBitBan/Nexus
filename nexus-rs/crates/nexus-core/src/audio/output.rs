@@ -166,13 +166,11 @@ fn open_file(path: &str, rate: u32, mut render: impl FnMut(&mut [f32]) -> usize 
 }
 
 fn find_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
-    if !name.is_empty() {
-        if let Ok(mut devs) = host.output_devices() {
-            if let Some(d) = devs.find(|d| d.description().map(|x| x.name() == name).unwrap_or(false)) {
+    if !name.is_empty()
+        && let Ok(mut devs) = host.output_devices()
+            && let Some(d) = devs.find(|d| d.description().map(|x| x.name() == name).unwrap_or(false)) {
                 return Some(d);
             }
-        }
-    }
     host.default_output_device()
 }
 
@@ -195,7 +193,7 @@ fn open_cpal(
                 if let Some(r) = ranges.iter().find(|r| {
                     r.sample_format() == fmt && r.channels() == ch && r.min_sample_rate() <= want && want <= r.max_sample_rate()
                 }) {
-                    chosen = r.clone().try_with_sample_rate(want);
+                    chosen = (*r).try_with_sample_rate(want);
                     if chosen.is_some() {
                         break 'outer;
                     }
@@ -237,7 +235,7 @@ where
     let channels = config.channels as usize;
     let mut stereo: Vec<f32> = vec![0.0; 16384 * 2];
     dev.build_output_stream(
-        config.clone(),
+        *config,
         move |data: &mut [T], _| {
             let frames = data.len() / channels;
             if stereo.len() < frames * 2 {

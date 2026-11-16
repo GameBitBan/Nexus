@@ -1149,8 +1149,8 @@ fn downloads_list(app: &mut Nexus, ui: &mut Ui, t: &Theme) -> Option<ActFn> {
         });
         hit
     };
-    if app.download.firewall_bad {
-        if banner(ui, "Windows Firewall isn't letting other Soulseek users connect to you, so some downloads never start. One admin prompt fixes it (only Nexus's download ports are opened).", &["fix firewall"]) == Some(0) {
+    if app.download.firewall_bad
+        && banner(ui, "Windows Firewall isn't letting other Soulseek users connect to you, so some downloads never start. One admin prompt fixes it (only Nexus's download ports are opened).", &["fix firewall"]) == Some(0) {
             act = Some(Box::new(|a: &mut Nexus| {
                 let port = a.slsk_config().listen_port;
                 a.toast_ms("click Yes on the Windows prompt…", 15.0);
@@ -1161,7 +1161,6 @@ fn downloads_list(app: &mut Nexus, ui: &mut Ui, t: &Theme) -> Option<ActFn> {
                 });
             }));
         }
-    }
     if !app.download.vpn.is_empty() && !app.download.vpn_hidden && app.dl_source() == "soulseek" {
         match banner(ui, &nexus_core::netcheck::vpn_advice(&app.download.vpn), &["use Internet Archive", "hide"]) {
             Some(0) => {

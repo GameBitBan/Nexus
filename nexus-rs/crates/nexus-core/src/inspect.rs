@@ -123,7 +123,7 @@ pub fn analyze(path: &str, columns: usize, progress: &AtomicU32, cancel: &Atomic
             let _ = fft.process(&mut scratch, &mut spec);
             mags.extend(spec.iter().map(|c| c.norm()));
             *k += 1;
-            if *k % 50 == 0 {
+            if (*k).is_multiple_of(50) {
                 progress.store((*k * 1000 / cols) as u32, Ordering::Relaxed);
             }
         }
@@ -137,8 +137,8 @@ pub fn analyze(path: &str, columns: usize, progress: &AtomicU32, cancel: &Atomic
     };
 
     let mut handle = |decoded: &frame::Audio, buf: &mut Vec<f32>| -> Result<(), String> {
-        if decoded.format() == Sample::I32(SampleType::Packed) || decoded.format() == Sample::I32(SampleType::Planar) {
-            if raw_bits > 16 && !lowbits_used {
+        if (decoded.format() == Sample::I32(SampleType::Packed) || decoded.format() == Sample::I32(SampleType::Planar))
+            && raw_bits > 16 && !lowbits_used {
                 int_frames += 1;
                 let planes = if decoded.is_planar() { decoded.planes() } else { 1 };
                 let per_plane = decoded.samples() * if decoded.is_planar() { 1 } else { usize::from(decoded.channels()) };
@@ -154,7 +154,6 @@ pub fn analyze(path: &str, columns: usize, progress: &AtomicU32, cancel: &Atomic
                     }
                 }
             }
-        }
         let rs = match &mut resampler {
             Some(r) => r,
             None => {

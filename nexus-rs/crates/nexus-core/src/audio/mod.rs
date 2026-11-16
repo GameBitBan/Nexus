@@ -359,11 +359,10 @@ impl Renderer {
             return 0;
         }
         let rate = self.shared.rate.load(Ordering::Relaxed);
-        if let Some(mut tap) = self.shared.tap.try_lock() {
-            if let Some(f) = tap.as_mut() {
+        if let Some(mut tap) = self.shared.tap.try_lock()
+            && let Some(f) = tap.as_mut() {
                 f(&out[..n * 2], rate);
             }
-        }
         if let Some(mut vis) = self.shared.vis.try_lock() {
             let (ring, w) = &mut *vis;
             let len = ring.len();

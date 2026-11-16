@@ -3,7 +3,7 @@
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, W, alpha};
 use egui::text::{LayoutJob, TextWrapping};
-use egui::{Align2, Color32, CursorIcon, FontId, Galley, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use egui::{Align2, Color32, CursorIcon, FontId, Galley, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use std::sync::Arc;
 
 /// One line of text cut with "…" to fit `width`.
@@ -48,14 +48,6 @@ pub fn dim(ui: &mut Ui, t: &Theme, text: &str) -> Response {
 
 pub fn small_dim(ui: &mut Ui, t: &Theme, text: &str) -> Response {
     label(ui, text, t.font(W::Regular, -1.5), t.c.dim, Sense::hover())
-}
-
-pub fn h1(ui: &mut Ui, t: &Theme, text: &str, sense: Sense) -> Response {
-    label(ui, text, t.font(W::Display, 27.0), t.c.text, sense)
-}
-
-pub fn h2(ui: &mut Ui, t: &Theme, text: &str) -> Response {
-    label(ui, text, t.font(W::Display, 11.0), t.c.text, Sense::hover())
 }
 
 // ---------------------------------------------------------------- icon buttons
@@ -141,7 +133,6 @@ pub fn paint_icon_button(ui: &Ui, t: &Theme, icon: Icon, rect: Rect, resp: &Resp
         panel: c.panel,
         hover,
         down: resp.is_pointer_button_down_on(),
-        active: o.active,
         rail: o.rail,
         volume: o.volume,
     };
@@ -256,15 +247,14 @@ pub fn text_bar(ui: &mut Ui, t: &Theme, id: egui::Id, value: f32, style: &str, s
     let mut changed = None;
     let mut released = None;
     let to_v = |x: f32| ((x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
-    if (resp.drag_started() || resp.is_pointer_button_down_on()) && ui.input(|i| i.pointer.primary_down()) {
-        if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+    if (resp.drag_started() || resp.is_pointer_button_down_on()) && ui.input(|i| i.pointer.primary_down())
+        && let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
             let v = to_v(p.x);
             if dragging != Some(v) {
                 changed = Some(v);
             }
             dragging = Some(v);
         }
-    }
     if dragging.is_some() && !ui.input(|i| i.pointer.primary_down()) {
         released = dragging;
         dragging = None;
@@ -410,13 +400,4 @@ pub fn search_box(ui: &mut Ui, t: &Theme, text: &mut String, hint: &str, width: 
         }
     }
     resp
-}
-
-/// Rect helper: centre a size inside a rect.
-pub fn centered(rect: Rect, size: Vec2) -> Rect {
-    Rect::from_center_size(rect.center(), size)
-}
-
-pub fn point_in_circle(p: Pos2, c: Pos2, r: f32) -> bool {
-    p.distance(c) <= r
 }

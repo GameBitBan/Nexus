@@ -22,7 +22,6 @@ pub enum Icon {
     Queue,
     Plus,
     Home,
-    Search,
     Gear,
     Refresh,
     Panel,
@@ -38,7 +37,7 @@ impl Icon {
     /// Icons drawn as outlines (the "extra" set): dim until hovered/active.
     pub fn is_extra(self) -> bool {
         use Icon::*;
-        matches!(self, Columns | Grid | List | Queue | Plus | Home | Search | Gear | Refresh | Panel | Eq | Lyrics | Download | Vis | Discover | Jam)
+        matches!(self, Columns | Grid | List | Queue | Plus | Home | Gear | Refresh | Panel | Eq | Lyrics | Download | Vis | Discover | Jam)
     }
 
     pub fn is_toggle(self) -> bool {
@@ -65,7 +64,6 @@ impl Icon {
             Queue => "queue",
             Plus => "+",
             Home => "home",
-            Search => "/",
             Gear => "settings",
             Refresh => "rescan",
             Panel => "panel",
@@ -124,7 +122,6 @@ pub struct Ctx {
     pub panel: Color32,
     pub hover: bool,
     pub down: bool,
-    pub active: bool,
     pub rail: bool,
     pub volume: f32,
 }
@@ -177,10 +174,6 @@ pub fn paint(p: &Painter, icon: Icon, rect: Rect, col: Color32, s: f32, k: &Ctx)
         Home => {
             polyline(p, vec![c(-0.21, -0.01), c(0.0, -0.21), c(0.21, -0.01)], pen, col);
             polyline(p, vec![c(-0.15, -0.07), c(-0.15, 0.2), c(0.15, 0.2), c(0.15, -0.07)], pen, col);
-        }
-        Search => {
-            p.circle_stroke(c(-0.04, -0.04), s * 0.14, Stroke::new(pen, col));
-            line(p, c(0.07, 0.07), c(0.2, 0.2), pen, col);
         }
         Gear => {
             p.circle_stroke(pos2(cx, cy), s * 0.13, Stroke::new(pen, col));

@@ -462,11 +462,10 @@ impl Nexus {
 
     pub fn go(&mut self, page: Page, push: bool) {
         let mut page = page;
-        if let Page::Artists(a) = &page {
-            if self.studio() {
+        if let Page::Artists(a) = &page
+            && self.studio() {
                 page = Page::Browse(a.clone());
             }
-        }
         if self.immersive && page != Page::Visualizer {
             self.set_immersive(false);
         }
@@ -692,12 +691,11 @@ impl Nexus {
         let Some(list) = self.playlists.get_mut(name) else { return };
         let lib = self.lib.clone();
         list.retain(|p| {
-            if let Some(t) = lib.track(p) {
-                if let Some(i) = drop.iter().position(|d| Arc::ptr_eq(d, t)) {
+            if let Some(t) = lib.track(p)
+                && let Some(i) = drop.iter().position(|d| Arc::ptr_eq(d, t)) {
                     drop.remove(i);
                     return false;
                 }
-            }
             true
         });
         self.save_playlists();
@@ -775,8 +773,8 @@ impl Nexus {
             self.cfg.set("session", json!({"queue": q, "qi": qi, "pos": (self.engine.position() * 1000.0) as i64}));
         }
         let vp = self.ctx.input(|i| i.viewport().clone());
-        if let Some(r) = vp.inner_rect {
-            if self.layout_name() != "mini" && !vp.fullscreen.unwrap_or(false) {
+        if let Some(r) = vp.inner_rect
+            && self.layout_name() != "mini" && !vp.fullscreen.unwrap_or(false) {
                 let max = vp.maximized.unwrap_or(false);
                 let mut w = self.cfg.map("window");
                 if !max {
@@ -790,7 +788,6 @@ impl Nexus {
                 w.insert("maximized".into(), json!(max));
                 self.cfg.set("window", serde_json::Value::Object(w));
             }
-        }
         self.cfg.save();
         self.stats.save();
     }
@@ -823,8 +820,8 @@ impl Nexus {
     }
 
     fn poll_fonts(&mut self) {
-        if let Some(rx) = &self.sysfonts_rx {
-            if let Ok(f) = rx.try_recv() {
+        if let Some(rx) = &self.sysfonts_rx
+            && let Ok(f) = rx.try_recv() {
                 self.sysfonts = Some(Arc::new(f));
                 self.sysfonts_rx = None;
                 let custom = !self.cfg.s("font_family").is_empty() || !self.cfg.s("display_font").is_empty();
@@ -840,7 +837,6 @@ impl Nexus {
                     self.ctx.set_fonts(theme::font_definitions(&self.cfg, self.sysfonts.as_deref()));
                 }
             }
-        }
     }
 
     fn timers(&mut self, now: f64) {
@@ -907,7 +903,6 @@ impl Nexus {
             Act::TogglePlay => self.toggle_play(),
             Act::Next => self.next(false),
             Act::Prev => self.prev(),
-            Act::Seek(s) => self.seek(s),
             Act::SeekFrac(f) => self.seek(f64::from(f) * self.dur),
             Act::ToggleShuffle => self.toggle_shuffle(),
             Act::CycleRepeat => self.cycle_repeat(),
@@ -1006,11 +1001,10 @@ impl Nexus {
         let vp = self.ctx.input(|i| i.viewport().clone());
         if name == "mini" {
             self.cfg.set("layout_before_mini", old.clone());
-            if let Some(r) = vp.inner_rect {
-                if !vp.maximized.unwrap_or(false) && !vp.fullscreen.unwrap_or(false) {
+            if let Some(r) = vp.inner_rect
+                && !vp.maximized.unwrap_or(false) && !vp.fullscreen.unwrap_or(false) {
                     self.cfg.set("size_before_mini", json!([r.width(), r.height()]));
                 }
-            }
             if vp.maximized.unwrap_or(false) {
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
             }
@@ -1029,11 +1023,10 @@ impl Nexus {
         }
         self.cfg.set("layout", name);
         self.cfg.save();
-        if let Page::Artists(a) = self.page.clone() {
-            if name != "classic" {
+        if let Page::Artists(a) = self.page.clone()
+            && name != "classic" {
                 self.page = Page::Browse(a);
             }
-        }
     }
 
     pub fn leave_mini(&mut self) {

@@ -75,19 +75,17 @@ pub fn import_files(paths: &[PathBuf], root: &Path, mv: bool) -> Imported {
             out.log.push(format!("couldn't import {name}: {e}"));
             continue;
         }
-        if let Some(parent) = p.parent() {
-            if let Ok(rd) = std::fs::read_dir(parent) {
+        if let Some(parent) = p.parent()
+            && let Ok(rd) = std::fs::read_dir(parent) {
                 for img in rd.flatten().map(|e| e.path()) {
                     let ok = ext_of(&img).is_some_and(|e| IMG_EXT.contains(&e.as_str()))
                         && img.file_stem().is_some_and(|s| COVER_NAMES.contains(&s.to_string_lossy().to_lowercase().as_str()));
-                    if let (true, Some(fname)) = (ok, img.file_name()) {
-                        if !dest_dir.join(fname).exists() {
+                    if let (true, Some(fname)) = (ok, img.file_name())
+                        && !dest_dir.join(fname).exists() {
                             let _ = std::fs::copy(&img, dest_dir.join(fname));
                         }
-                    }
                 }
             }
-        }
         out.log.push(format!("imported {} — {}", t.artist, t.title));
         out.files.push(dest.to_string_lossy().to_string());
     }

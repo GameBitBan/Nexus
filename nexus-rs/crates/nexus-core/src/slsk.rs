@@ -110,11 +110,10 @@ pub struct Slsk {
 
 /// Send the library's log lines to `soulseek.log` (call first thing in `main`, before any threads).
 pub fn init_logging(path: &Path) {
-    if let Ok(m) = std::fs::metadata(path) {
-        if m.len() > 1_500_000 {
+    if let Ok(m) = std::fs::metadata(path)
+        && m.len() > 1_500_000 {
             let _ = std::fs::rename(path, path.with_extension("log.1"));
         }
-    }
     // SAFETY: called at the start of main, before other threads exist.
     unsafe {
         if std::env::var_os("LOG_FILE").is_none() {

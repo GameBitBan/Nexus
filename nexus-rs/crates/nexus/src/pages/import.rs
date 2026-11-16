@@ -168,8 +168,8 @@ impl Nexus {
 }
 
 pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
-    if let Some(rx) = &app.import.job {
-        if let Ok(out) = rx.try_recv() {
+    if let Some(rx) = &app.import.job
+        && let Ok(out) = rx.try_recv() {
             app.import.job = None;
             match out {
                 Err(e) => app.import.status = format!("couldn't read that: {e}"),
@@ -186,7 +186,6 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
                 }
             }
         }
-    }
     let t = app.t.clone();
     let c = t.c;
     let inner = Rect::from_min_max(rect.min + vec2(32.0, 28.0), rect.max - vec2(28.0, 0.0));

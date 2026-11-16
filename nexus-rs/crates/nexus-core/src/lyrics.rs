@@ -68,17 +68,14 @@ fn sylt(path: &Path) -> Option<Vec<(u64, String)>> {
     let mp3 = lofty::mpeg::MpegFile::read_from(&mut f, ParseOptions::new().read_properties(false)).ok()?;
     let tag = mp3.id3v2()?;
     for frame in tag {
-        if let Frame::Binary(b) = frame {
-            if frame.id_str() == "SYLT" {
-                if let Ok(s) = SynchronizedTextFrame::parse(&b.data, frame.flags()) {
-                    if s.timestamp_format == TimestampFormat::MS && !s.content.is_empty() {
+        if let Frame::Binary(b) = frame
+            && frame.id_str() == "SYLT"
+                && let Ok(s) = SynchronizedTextFrame::parse(&b.data, frame.flags())
+                    && s.timestamp_format == TimestampFormat::MS && !s.content.is_empty() {
                         let mut v: Vec<(u64, String)> = s.content.iter().map(|(t, l)| (u64::from(*t), l.trim().to_string())).collect();
                         v.sort_by_key(|x| x.0);
                         return Some(v);
                     }
-                }
-            }
-        }
     }
     None
 }
@@ -88,11 +85,10 @@ pub fn read_lyrics(path: &Path) -> Option<Lyrics> {
         return Some(l);
     }
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    if ext == "mp3" {
-        if let Some(s) = sylt(path) {
+    if ext == "mp3"
+        && let Some(s) = sylt(path) {
             return Some(Lyrics { synced: Some(s), plain: None, source: "tag (SYLT)".into() });
         }
-    }
     let tagged = lofty::read_from_path(path).ok()?;
     let mut texts: Vec<String> = Vec::new();
     for tag in tagged.tags() {

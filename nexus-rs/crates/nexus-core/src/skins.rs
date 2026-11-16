@@ -173,11 +173,10 @@ pub fn clean_meta(meta: &Value) -> Map<String, Value> {
     let mut colors = Map::new();
     if let Some(Value::Object(c)) = meta.get("colors") {
         for (k, v) in c {
-            if COLOR_KEYS.contains(&k.as_str()) {
-                if let Some(n) = v.as_str().and_then(norm_color) {
+            if COLOR_KEYS.contains(&k.as_str())
+                && let Some(n) = v.as_str().and_then(norm_color) {
                     colors.insert(k.clone(), json!(n));
                 }
-            }
         }
     }
     out.insert("colors".into(), Value::Object(colors));
@@ -382,8 +381,8 @@ pub fn save_current(cfg: &mut Config, colors: Map<String, Value>, name: &str, au
     let s = slug(name);
     let d = skins_dir().join(&s);
     std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-    if let Some(o) = &old {
-        if o.path != d {
+    if let Some(o) = &old
+        && o.path != d {
             for sub in ["assets", "fonts"] {
                 let src = o.path.join(sub);
                 if src.is_dir() {
@@ -398,7 +397,6 @@ pub fn save_current(cfg: &mut Config, colors: Map<String, Value>, name: &str, au
                 }
             }
         }
-    }
     let mut bg = old.as_ref().map(|o| o.background.clone()).unwrap_or_default();
     let own = cfg.s("custom_background");
     let background = match background {
@@ -464,11 +462,10 @@ pub fn install_bundled(cfg: &mut Config) {
         if seen.contains(&stem) {
             continue;
         }
-        if !have.contains(&slug(&stem)) {
-            if let Err(e) = import_file(&f) {
+        if !have.contains(&slug(&stem))
+            && let Err(e) = import_file(&f) {
                 log::warn!("bundled skin {}: {e}", f.display());
             }
-        }
         seen.push(stem);
         changed = true;
     }
@@ -553,41 +550,6 @@ pub fn style(qss: &str, colors: &Map<String, Value>) -> SkinStyle {
     st
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn slugs_and_paths() {
-        assert_eq!(slug("Amber CRT"), "amber-crt");
-        assert_eq!(slug("  !!"), "skin");
-        assert_eq!(skin_rel("assets/bg.jpg"), "assets/bg.jpg");
-        assert_eq!(skin_rel("../x"), "");
-        assert_eq!(skin_rel("C:/x"), "");
-        assert_eq!(skin_rel("/etc/passwd"), "");
-    }
-
-    #[test]
-    fn meta_is_cleaned() {
-        let m = clean_meta(&json!({"name": "X", "colors": {"bg": "#ABC", "evil": "#fff", "text": "red"},
-                                    "settings": {"corner_radius": 4, "font_size": 12.5, "uppercase": "yes", "rm_rf": true}}));
-        assert_eq!(m["colors"], json!({"bg": "#aabbcc"}));
-        assert_eq!(m["settings"], json!({"corner_radius": 4, "font_size": 12.5}));
-    }
-
-    #[test]
-    fn stylesheet_subset() {
-        let colors: Map<String, Value> = serde_json::from_value(json!({"accent": "#3ef0c0", "bg": "#000000"})).unwrap();
-        let st = style(
-            "/* x */ QWidget#card, QWidget#nowpanel, QWidget#rail { border: 1px solid rgba(62, 240, 192, 0.18); }\nQPushButton#pillPrimary { background: @accent; border-color: @accent; color: @bg; }",
-            &colors,
-        );
-        assert_eq!(st.panel_border, Some((1.0, "#3ef0c0".into(), 0.18)));
-        assert_eq!(st.primary_bg.as_deref(), Some("#3ef0c0"));
-        assert_eq!(st.primary_fg.as_deref(), Some("#000000"));
-    }
-}
-
 // ---------------------------------------------------------------- built-in looks (presets)
 
 const PRESETS_JSON: &str = include_str!("../../../assets/presets.json");
@@ -622,4 +584,39 @@ pub fn apply_preset(cfg: &mut Config, name: &str) {
     cfg.set("color_overrides", json!({}));
     cfg.set("skin", "");
     cfg.save();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugs_and_paths() {
+        assert_eq!(slug("Amber CRT"), "amber-crt");
+        assert_eq!(slug("  !!"), "skin");
+        assert_eq!(skin_rel("assets/bg.jpg"), "assets/bg.jpg");
+        assert_eq!(skin_rel("../x"), "");
+        assert_eq!(skin_rel("C:/x"), "");
+        assert_eq!(skin_rel("/etc/passwd"), "");
+    }
+
+    #[test]
+    fn meta_is_cleaned() {
+        let m = clean_meta(&json!({"name": "X", "colors": {"bg": "#ABC", "evil": "#fff", "text": "red"},
+                                    "settings": {"corner_radius": 4, "font_size": 12.5, "uppercase": "yes", "rm_rf": true}}));
+        assert_eq!(m["colors"], json!({"bg": "#aabbcc"}));
+        assert_eq!(m["settings"], json!({"corner_radius": 4, "font_size": 12.5}));
+    }
+
+    #[test]
+    fn stylesheet_subset() {
+        let colors: Map<String, Value> = serde_json::from_value(json!({"accent": "#3ef0c0", "bg": "#000000"})).unwrap();
+        let st = style(
+            "/* x */ QWidget#card, QWidget#nowpanel, QWidget#rail { border: 1px solid rgba(62, 240, 192, 0.18); }\nQPushButton#pillPrimary { background: @accent; border-color: @accent; color: @bg; }",
+            &colors,
+        );
+        assert_eq!(st.panel_border, Some((1.0, "#3ef0c0".into(), 0.18)));
+        assert_eq!(st.primary_bg.as_deref(), Some("#3ef0c0"));
+        assert_eq!(st.primary_fg.as_deref(), Some("#000000"));
+    }
 }

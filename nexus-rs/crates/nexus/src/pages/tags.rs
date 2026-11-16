@@ -166,8 +166,8 @@ impl TagState {
     }
 
     fn poll(&mut self) -> Option<SaveResult> {
-        if let Some(rx) = &self.load_rx {
-            if let Ok((list, bad)) = rx.try_recv() {
+        if let Some(rx) = &self.load_rx
+            && let Ok((list, bad)) = rx.try_recv() {
                 self.load_rx = None;
                 self.paths = list.iter().map(|(p, _)| p.clone()).collect();
                 self.orig = list.into_iter().collect();
@@ -176,22 +176,19 @@ impl TagState {
                 self.anchor = Some(0);
                 self.refill = true;
             }
-        }
-        if let Some(rx) = &self.online_rx {
-            if let Ok(res) = rx.try_recv() {
+        if let Some(rx) = &self.online_rx
+            && let Ok(res) = rx.try_recv() {
                 self.online_rx = None;
                 self.online = Some(match res {
                     Some((info, cov)) => Online::Found(info, cov.map(|(d, w, h)| (Arc::new(d), w, h))),
                     None => Online::Nothing,
                 });
             }
-        }
-        if let Some(rx) = &self.save_rx {
-            if let Ok(res) = rx.try_recv() {
+        if let Some(rx) = &self.save_rx
+            && let Ok(res) = rx.try_recv() {
                 self.save_rx = None;
                 return Some(res);
             }
-        }
         None
     }
 
@@ -529,11 +526,10 @@ impl Nexus {
             self.set_library(nexus_core::library::Library::from_tracks(res.tracks));
             self.lib.save();
             self.lyrics.forget();
-            if let Some(cur) = self.current_track().cloned() {
-                if res.ok.contains(&cur.path) {
+            if let Some(cur) = self.current_track().cloned()
+                && res.ok.contains(&cur.path) {
                     self.now_playing_changed();
                 }
-            }
         }
     }
 }
@@ -762,11 +758,10 @@ fn cover_column(app: &mut Nexus, ui: &mut Ui, t: &Theme) {
             5 => {
                 let sel = app.tags.selected();
                 let data = sel.iter().find_map(|p| app.tags.orig.get(p).and_then(|o| o.tags.folder.clone()));
-                if let Some(d) = data {
-                    if let Err(e) = app.tags.set_cover_bytes(&d) {
+                if let Some(d) = data
+                    && let Err(e) = app.tags.set_cover_bytes(&d) {
                         app.toast(e);
                     }
-                }
             }
             _ => {}
         }
@@ -1086,8 +1081,8 @@ fn table(app: &mut Nexus, ui: &mut Ui, t: &Theme) {
                 let w = widths[ci];
                 let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(w, row_h));
                 x += w;
-                if let Some((er, ec, buf, focus)) = &mut st.edit {
-                    if *er == row && *ec == ci {
+                if let Some((er, ec, buf, focus)) = &mut st.edit
+                    && *er == row && *ec == ci {
                         let id = egui::Id::unique(("tag-cell", row, ci));
                         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(cell.shrink2(vec2(2.0, 3.0))).layout(Layout::left_to_right(Align::Center)));
                         let r = child.add(egui::TextEdit::singleline(buf).id(id).desired_width(cell.width() - 6.0).margin(egui::Margin::symmetric(5, 2)));
@@ -1102,7 +1097,6 @@ fn table(app: &mut Nexus, ui: &mut Ui, t: &Theme) {
                         }
                         continue;
                     }
-                }
                 let text = if *k == "_file" { file_name(&path) } else { st.value(&path, k) };
                 let changed = *k != "_file" && st.pending.get(&path).is_some_and(|m| m.contains_key(*k));
                 if hover_x.is_some_and(|hx| hx >= cell.left() && hx < cell.right()) {
@@ -1143,12 +1137,11 @@ fn table(app: &mut Nexus, ui: &mut Ui, t: &Theme) {
             st.refill = true;
         }
     }
-    if let Some((row, ci)) = start_edit {
-        if let Some(path) = st.paths.get(row) {
+    if let Some((row, ci)) = start_edit
+        && let Some(path) = st.paths.get(row) {
             let v = st.value(path, COLS[ci].0);
             st.edit = Some((row, ci, v, true));
         }
-    }
     if let Some((row, m)) = click {
         if m.shift {
             let a = st.anchor.unwrap_or(row);

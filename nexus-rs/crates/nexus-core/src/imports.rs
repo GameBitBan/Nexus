@@ -174,11 +174,10 @@ fn parse_depth(name: &str, data: &[u8], depth: u32) -> Result<ImportResult, Stri
         for i in 0..z.len() {
             let Ok(f) = z.by_index(i) else { continue };
             total += f.size();
-            if !f.is_dir() && f.size() < 300_000_000 {
-                if let Ok(n) = f.name() {
+            if !f.is_dir() && f.size() < 300_000_000
+                && let Ok(n) = f.name() {
                     names.push(n.to_string());
                 }
-            }
         }
         if total > 2_000_000_000 {
             return Err("that zip unpacks way too big".into());
@@ -225,8 +224,8 @@ fn parse_depth(name: &str, data: &[u8], depth: u32) -> Result<ImportResult, Stri
     }
     if low.ends_with(".json") {
         let Ok(j) = serde_json::from_str::<Value>(&read_text(data)) else { return Ok(res) };
-        if base == "yourlibrary.json" {
-            if let Value::Object(o) = &j {
+        if base == "yourlibrary.json"
+            && let Value::Object(o) = &j {
                 res.source = "Spotify".into();
                 let arr = |k: &str| o.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
                 let s = |x: &Value, k: &str| x.get(k).map(val_str).unwrap_or_default();
@@ -243,7 +242,6 @@ fn parse_depth(name: &str, data: &[u8], depth: u32) -> Result<ImportResult, Stri
                     .collect();
                 return Ok(res);
             }
-        }
         if let Some(pls) = j.get("playlists").and_then(Value::as_array) {
             res.source = "Spotify".into();
             for p in pls {
@@ -471,11 +469,10 @@ impl Matcher {
     }
 
     pub fn find(&self, item: &Item) -> Option<Arc<Track>> {
-        if let Some(p) = &item.path {
-            if let Some(t) = self.by_path.get(&path_key(p)) {
+        if let Some(p) = &item.path
+            && let Some(t) = self.by_path.get(&path_key(p)) {
                 return Some(t.clone());
             }
-        }
         let cands = self.by_title.get(&norm(&item.title))?;
         let want = artist_tokens(&item.artist);
         let alb = norm(&item.album);
@@ -582,11 +579,10 @@ pub fn apply(chosen: &[(String, Vec<Item>)], source: &str, m: &Matcher, pls: &mu
         let mut paths: Vec<String> = pls.get(&fin).cloned().unwrap_or_default();
         let mut have: HashSet<String> = paths.iter().cloned().collect();
         for i in items {
-            if let Some(t) = m.find(i) {
-                if have.insert(t.path.clone()) {
+            if let Some(t) = m.find(i)
+                && have.insert(t.path.clone()) {
                     paths.push(t.path.clone());
                 }
-            }
         }
         if let Some(v) = pls.get_mut(&fin) {
             *v = paths;
@@ -611,12 +607,11 @@ pub fn rematch(tracks: &[Arc<Track>], pls: &mut Playlists) -> usize {
         let Some(paths) = pls.get_mut(name) else { continue };
         let mut have: HashSet<String> = paths.iter().cloned().collect();
         for i in &info.items {
-            if let Some(t) = m.find(i) {
-                if have.insert(t.path.clone()) {
+            if let Some(t) = m.find(i)
+                && have.insert(t.path.clone()) {
                     paths.push(t.path.clone());
                     added += 1;
                 }
-            }
         }
     }
     added

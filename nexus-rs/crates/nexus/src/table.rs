@@ -105,7 +105,7 @@ impl TableState {
     }
 
     /// The rows in the order they're shown.
-    pub fn view<'a>(&self, tracks: &'a [Arc<Track>]) -> Vec<Arc<Track>> {
+    pub fn view(&self, tracks: &[Arc<Track>]) -> Vec<Arc<Track>> {
         self.order.iter().filter_map(|&i| tracks.get(i).cloned()).collect()
     }
 
@@ -239,11 +239,10 @@ pub fn show(ui: &mut Ui, env: &mut Env, st: &mut TableState, spec: Spec) {
         let mut label = t.header(col.label());
         let sortable = spec.mode != Mode::Queue;
         let resp = ui.interact(r, ui.scope_id().with((spec.id, "h", i)), if sortable { Sense::click() } else { Sense::hover() });
-        if let Some((sc, desc)) = st.sort {
-            if sc == *col {
+        if let Some((sc, desc)) = st.sort
+            && sc == *col {
                 label = format!("{label} {}", if desc { "▾" } else { "▴" });
             }
-        }
         let col_c = if resp.hovered() && sortable { c.text } else { c.dim };
         let g = elided(ui, &label, hfont.clone(), col_c, r.width() - 16.0);
         let pos = if col.right() { pos2(r.right() - 8.0 - g.size().x, r.center().y - g.size().y / 2.0) } else { pos2(r.left() + 8.0, r.center().y - g.size().y / 2.0) };
@@ -285,11 +284,10 @@ pub fn show(ui: &mut Ui, env: &mut Env, st: &mut TableState, spec: Spec) {
             st.anchor = Some(r);
             st.scroll_to = Some(r);
         }
-        if enter {
-            if let Some(r) = st.anchor {
+        if enter
+            && let Some(r) = st.anchor {
                 activate(env, st, &spec, r);
             }
-        }
     }
 
     let mut sa = egui::ScrollArea::vertical().id_salt((spec.id, "rows")).auto_shrink([false, false]);
@@ -359,9 +357,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, st: &mut TableState, spec: Spec) {
                     c.accent
                 } else if *col == Col::Format && tr.is_lossy() && !spec.plain {
                     t.lossy
-                } else if col.dim() && !spec.plain {
-                    c.dim
-                } else if col.dim() && spec.plain && !playing {
+                } else if col.dim() && (!spec.plain || !playing) {
                     c.dim
                 } else {
                     c.text
@@ -424,19 +420,16 @@ pub fn show(ui: &mut Ui, env: &mut Env, st: &mut TableState, spec: Spec) {
             }
         }
     }
-    if let Some(row) = dbl {
-        if !env.single_click {
+    if let Some(row) = dbl
+        && !env.single_click {
             activate(env, st, &spec, row);
         }
-    }
     // clicking anywhere else takes the keyboard focus away
-    if ui.input(|i| i.pointer.any_pressed()) && clicked.is_none() && dbl.is_none() {
-        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-            if !full.contains(pos) {
+    if ui.input(|i| i.pointer.any_pressed()) && clicked.is_none() && dbl.is_none()
+        && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+            && !full.contains(pos) {
                 st.focus = false;
             }
-        }
-    }
 }
 
 fn activate(env: &mut Env, st: &TableState, spec: &Spec, row: usize) {
@@ -477,13 +470,11 @@ fn menu(ui: &mut Ui, env: &mut Env, st: &mut TableState, spec: &Spec) {
             acts.push(Act::PlaylistNew(sel.clone()));
         }
     });
-    if spec.mode == Mode::Playlist {
-        if let Some(pl) = env.playlist {
-            if ui.button(t.l("remove from playlist")).clicked() {
+    if spec.mode == Mode::Playlist
+        && let Some(pl) = env.playlist
+            && ui.button(t.l("remove from playlist")).clicked() {
                 acts.push(Act::PlaylistRemoveRows(pl.to_string(), rows.clone()));
             }
-        }
-    }
     if spec.mode == Mode::Queue && ui.button(t.l("remove from queue")).clicked() {
         acts.push(Act::QueueRemove(rows.clone()));
     }

@@ -36,8 +36,8 @@ pub fn allow_host(host: &str) {
 fn roots() -> RootCerts {
     // an explicit bundle wins (corporate proxies, NixOS sandboxes); otherwise the OS store
     for var in ["SSL_CERT_FILE", "NIX_SSL_CERT_FILE"] {
-        if let Some(path) = std::env::var_os(var) {
-            if let Ok(pem) = std::fs::read(&path) {
+        if let Some(path) = std::env::var_os(var)
+            && let Ok(pem) = std::fs::read(&path) {
                 let certs: Vec<_> = ureq::tls::parse_pem(&pem)
                     .filter_map(|i| match i {
                         Ok(PemItem::Certificate(c)) => Some(c),
@@ -48,7 +48,6 @@ fn roots() -> RootCerts {
                     return RootCerts::new_with_certs(&certs);
                 }
             }
-        }
     }
     RootCerts::PlatformVerifier
 }

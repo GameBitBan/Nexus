@@ -344,15 +344,14 @@ fn look(app: &mut Nexus, ui: &mut Ui) {
         remove = widgets::pill(ui, &t, "remove", Pill::Normal).clicked();
         widgets::small_dim(ui, &t, &name);
     });
-    if choose {
-        if let Some(f) = pick_background() {
+    if choose
+        && let Some(f) = pick_background() {
             let video = skins::is_video(&f);
             app.set_cfg("custom_background", f.to_string_lossy().to_string());
             if video {
                 app.toast("video background on — it's silent, loops, and pauses while Nexus is minimised");
             }
         }
-    }
     if remove {
         app.set_cfg("custom_background", "");
     }
@@ -510,11 +509,10 @@ fn skins_tab(app: &mut Nexus, ui: &mut Ui) {
             widgets::small_dim(ui, &t, &app.skin_form.msg.clone());
         }
     });
-    if import {
-        if let Some(f) = rfd::FileDialog::new().add_filter("Nexus skins", &["nexusskin", "zip"]).set_directory(nexus_core::paths::home_dir().join("Downloads")).pick_file() {
+    if import
+        && let Some(f) = rfd::FileDialog::new().add_filter("Nexus skins", &["nexusskin", "zip"]).set_directory(nexus_core::paths::home_dir().join("Downloads")).pick_file() {
             app.import_skin(&f);
         }
-    }
     if open {
         app.acts.push(Act::OpenFolder(nexus_core::paths::skins_dir().to_string_lossy().to_string()));
     }
@@ -603,8 +601,8 @@ fn skins_tab(app: &mut Nexus, ui: &mut Ui) {
         remove = widgets::pill(ui, &t, "remove", Pill::Normal).clicked();
         widgets::small_dim(ui, &t, &bl);
     });
-    if choose {
-        if let Some(f) = pick_background() {
+    if choose
+        && let Some(f) = pick_background() {
             let name = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
             if skins::is_video(&f) {
                 if std::fs::metadata(&f).map(|m| m.len()).unwrap_or(0) > 145_000_000 {
@@ -624,7 +622,6 @@ fn skins_tab(app: &mut Nexus, ui: &mut Ui) {
                 }
             }
         }
-    }
     if remove {
         app.skin_form.background = Some(skins::Background::Remove);
         if !app.cfg.s("custom_background").is_empty() {
@@ -679,11 +676,10 @@ fn skins_tab(app: &mut Nexus, ui: &mut Ui) {
             Ok(slug) => {
                 app.toast(format!("saved skin “{name}”"));
                 app.after_look_change();
-                if save_export {
-                    if let Some(m) = skins::read_dir(&nexus_core::paths::skins_dir().join(slug)) {
+                if save_export
+                    && let Some(m) = skins::read_dir(&nexus_core::paths::skins_dir().join(slug)) {
                         export_skin(app, &m);
                     }
-                }
             }
             Err(e) => app.skin_form.msg = format!("couldn't save: {e}"),
         }
@@ -778,11 +774,10 @@ fn player(app: &mut Nexus, ui: &mut Ui) {
             browse = widgets::pill(ui, &t, "…", Pill::Normal).clicked();
         });
     });
-    if browse {
-        if let Some(p) = rfd::FileDialog::new().set_file_name("nowplaying.txt").set_directory(nexus_core::paths::home_dir()).save_file() {
+    if browse
+        && let Some(p) = rfd::FileDialog::new().set_file_name("nowplaying.txt").set_directory(nexus_core::paths::home_dir()).save_file() {
             out = Some(p.to_string_lossy().to_string());
         }
-    }
     if let Some(v) = out {
         app.set_cfg("now_playing_file", v.trim().to_string());
     }
@@ -821,14 +816,13 @@ fn library(app: &mut Nexus, ui: &mut Ui) {
     if add {
         app.acts.push(Act::AddFolder);
     }
-    if remove {
-        if let Some(i) = sel.filter(|&i| i < folders.len()) {
+    if remove
+        && let Some(i) = sel.filter(|&i| i < folders.len()) {
             let mut f = folders.clone();
             f.remove(i);
             app.set_cfg("library_folders", json!(f));
             ui.data_mut(|d| d.remove::<Option<usize>>(sel_id));
         }
-    }
     if rescan {
         app.acts.push(Act::Rescan(false));
     }

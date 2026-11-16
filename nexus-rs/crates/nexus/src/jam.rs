@@ -451,8 +451,8 @@ impl Nexus {
             Role::Guest => match t.as_str() {
                 "np" => self.jam_got_np(&d, now),
                 "lib" => {
-                    if self.jam.lib.len() < 100_000 {
-                        if let Some(Value::Array(items)) = d.get("items") {
+                    if self.jam.lib.len() < 100_000
+                        && let Some(Value::Array(items)) = d.get("items") {
                             for x in items {
                                 let Some(a) = x.as_array() else { continue };
                                 let Some(id) = a.first().and_then(Value::as_i64) else { continue };
@@ -460,7 +460,6 @@ impl Nexus {
                                 self.jam.lib.push(LibItem { id, title: txt(1), artist: txt(2), album: txt(3) });
                             }
                         }
-                    }
                 }
                 "perm" => {
                     self.jam.dl_mode = {
@@ -773,23 +772,20 @@ impl Nexus {
                 files.push((p, format!("{folder}/{base}"), m.len()));
             }
         }
-        if album && !files.is_empty() {
-            if let Some(dir) = files[0].0.parent().map(|d| d.to_path_buf()) {
-                if let Ok(rd) = std::fs::read_dir(&dir) {
+        if album && !files.is_empty()
+            && let Some(dir) = files[0].0.parent().map(|d| d.to_path_buf())
+                && let Ok(rd) = std::fs::read_dir(&dir) {
                     for e in rd.flatten() {
                         let p = e.path();
                         let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
                         let stem = p.file_stem().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
-                        if IMG_EXT.contains(&ext.as_str()) && COVER_NAMES.contains(&stem.as_str()) {
-                            if let Ok(m) = e.metadata() {
+                        if IMG_EXT.contains(&ext.as_str()) && COVER_NAMES.contains(&stem.as_str())
+                            && let Ok(m) = e.metadata() {
                                 let fname = e.file_name().to_string_lossy().to_string();
                                 files.push((p, format!("{folder}/{fname}"), m.len()));
                             }
-                        }
                     }
                 }
-            }
-        }
         if files.is_empty() {
             self.jam.jam.send(&json!({"t": "dlno", "rid": rid, "why": "files missing"}), Some(peer), None);
             return;

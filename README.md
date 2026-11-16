@@ -1,52 +1,61 @@
 # Nexus
 
-![license](https://img.shields.io/badge/license-GPL--3.0-black) ![platform](https://img.shields.io/badge/windows%20%7C%20linux-black)
+![license](https://img.shields.io/badge/license-GPL--3.0-black) ![platform](https://img.shields.io/badge/nixos%20%7C%20linux%20%7C%20windows-black)
 
 Minimal black & white local music player for your FLAC / lossless library. Album-grid home, Apple / Nothing inspired look, single-click play, album art everywhere, and nearly everything customizable live.
 
+**This is Nexus 2**, rewritten in Rust (the `rust` branch). It's one native program: no Python, no Qt, starts instantly, and runs on NixOS straight from the flake. It uses the same data folder as Nexus 1 — your library, playlists, play counts, skins and settings carry over both ways — and it can jam with people still on Nexus 1. Nexus 1 (Python) stays on `main` until Nexus 2 is released.
+
 ## install
 
-### Windows — one line (recommended)
-Open **PowerShell** (Start → type *PowerShell*) and paste:
-```powershell
-iwr -useb https://raw.githubusercontent.com/GameBitBan/Nexus/main/install.ps1 | iex
-```
-It installs Python if you don't have it, grabs the latest release, and adds **Nexus** to your Start Menu and Desktop (right-click → Pin to taskbar). Works with Smart App Control on. Uninstall from Settings → Apps → Installed apps → Nexus (your library and settings are kept).
-
-### Windows — manual
-1. Install Python 3.10+ from python.org (tick "Add python.exe to PATH").
-2. Download `nexus.zip` from [Releases](https://github.com/GameBitBan/Nexus/releases/latest), extract it, double-click **`Install Nexus.pyw`**.
-
 ### NixOS
+```sh
+nix run github:GameBitBan/Nexus/rust            # try it straight from GitHub
+nix profile install github:GameBitBan/Nexus/rust  # or install it: `nexus` + desktop entry + icon
 ```
-nix run github:GameBitBan/Nexus       # run once, straight from GitHub
-nix run .                      # or from a clone
-nix profile install .          # installs `nexus` + desktop entry + icon
+In a flake-based config:
+```nix
+# flake.nix
+inputs.nexus.url = "github:GameBitBan/Nexus/rust";
+
+# configuration.nix (or home-manager's home.packages)
+environment.systemPackages = [ inputs.nexus.packages.${pkgs.system}.default ];
 ```
-Or add the flake as an input and put `inputs.nexus.packages.x86_64-linux.default` in `environment.systemPackages`. Wayland app_id / class is `nexus` for Hyprland window rules.
+`overlays.default` adds `pkgs.nexus` if you prefer overlays. Builds for x86_64-linux and aarch64-linux; the package runs its own self-test while building. The Wayland app_id / X11 class is `nexus` for Hyprland / Sway window rules. Updates come with `nix flake update` (the in-app updater only tells you a new version exists).
 
-### other Linux / mac
-`./run.sh`
+`nix run github:GameBitBan/Nexus/rust#nexus1` still runs the Python version.
 
-On first launch it scans `~/Music` (or your old monotone folders). Add folders in settings → library.
+### Windows
+Download **`nexus2-setup-x64.exe`** from [Releases](https://github.com/GameBitBan/Nexus/releases) — a normal per-user installer (no admin prompt, uninstall from Settings → Apps). It installs over Nexus 1 and keeps everything. `nexus2-windows-x64.zip` is the same thing portable: unzip anywhere and run `Nexus.exe`. Until the exe is code-signed, Smart App Control may block it; see [CODE_SIGNING.md](CODE_SIGNING.md).
 
-## updating (no reinstall)
+### other Linux
+**`nexus2-linux-x86_64.zip`** from Releases: unzip and run `Nexus/nexus`. FFmpeg is built in; it only needs ALSA (`libasound`) and `libopus`, which every desktop distro has. It updates itself.
 
-Nexus checks GitHub Releases on launch and shows a little *update + restart* button at the bottom when there's a new version (settings → update to turn that off or check now). You can also **drag a nexus.zip onto the window**. It swaps the app files in place, installs any new packages on the next start, keeps your library, playlists and settings, and restarts. The previous `nexus.py` is kept in `_previous/`. Soulseek downloads that are still running pause for the restart, then carry on and import by themselves (from 1.7.1 on).
+### building it yourself
+```sh
+cd nexus-rs
+cargo run --release           # needs FFmpeg 6–8 dev files, ALSA (Linux), clang and pkg-config
+nix develop                   # or get all of that from the flake's dev shell
+```
+`nexus --selftest report.txt` checks a build has everything it needs (codecs, Opus for jams, fonts, skins).
 
-Making a release: bump `VERSION` in `nexus.py` and push to `main`. GitHub Actions builds `nexus.zip`, tags it `v<VERSION>` and publishes the release; everyone's Nexus picks it up.
+On first launch Nexus scans `~/Music` (or your Nexus 1 / monotone folders). Add folders in settings → library.
+
+## updating
+
+Windows and the Linux zip check GitHub Releases on launch and show an *update + restart* button at the bottom when there's a new version (settings → update to turn that off or check now). Downloads are checked against GitHub's checksum before anything is replaced. NixOS: update your flake input.
+
+Making a release: push a tag like `v2.0.1` on the `rust` branch. GitHub Actions builds the installer, the Windows zip and the Linux zip, tests them and publishes a pre-release.
 
 ## sound
 
-The **Nexus audio engine** (default) decodes with FFmpeg and outputs through PortAudio:
+The audio engine decodes with FFmpeg and plays through your system's audio (PipeWire / PulseAudio / ALSA on Linux, WASAPI on Windows), at the file's own sample rate whenever the device can do it:
 
 - **exclusive mode** (Windows, settings → sound): Nexus takes over the device, so audio skips the Windows mixer and its resampling. With EQ off and volume at 100% the output is bit-perfect. Other apps go silent while Nexus plays.
 - **equalizer** (`ctrl+e` or the sliders icon in the player bar): 10 bands from 31 Hz to 16 kHz, ±12 dB, plus preamp and preset chips (bass boost, vocal, loudness, late night, hip-hop…). It fills the window: a big EQ curve over a live spectrum (drag the curve's points or the sliders), and the sliders below. Linear-phase, so it doesn't smear transients.
 - **volume boost** up to 400% (settings → sound → max volume, default 200%), with a peak limiter so it gets louder without crackling.
 - **gapless** playback between tracks.
 - **ReplayGain** (track or album) for even loudness, if your files have the tags.
-
-If the engine's packages (numpy, av, sounddevice) can't load, Nexus falls back to the basic Qt player and says so in settings → sound.
 
 ## discover
 
@@ -65,7 +74,7 @@ The people icon in the rail (`ctrl+j`). One of you **hosts**, the other **joins*
 - **join**: type the code. Your own music pauses and you hear theirs, with the cover, song, progress, what's up next, your own volume, and the chat. The normal player bar follows along: it shows their song and how far in it is, **play/pause (or space) pauses just for you** (the others keep listening, and resuming drops you back in live), and the volume slider and mute are yours. Skipping asks the host (if they've allowed it); only the host can seek or go back. You can search their library and double-click a song to add it to their queue (the host can turn that off, and can let friends skip). Lyrics, the visualizer and the record ring follow the jam too, and Discord shows what you're listening to along with them.
 - **downloading from a friend**: listeners get **⤓ song** / **⤓ album** under the cover, and can right-click any song in the host's library → *download this song* / *download the whole album*. The host chooses in the start screen whether friends can download: **ask me** (a toast + a list of requests to approve), **always** or **never**. Files come over the same encrypted connection, untouched (the original FLAC, cover art included), and land in the listener's library sorted into Artist / Album.
 
-Audio goes straight between your PCs (WebRTC, encrypted, Opus at 320 kbps — near-transparent, not lossless). To find each other, both apps swap connection details through a public ntfy.sh channel named after the code, encrypted with a key made from the code, so the relay only sees scrambled data. If both of you are behind very strict routers (e.g. carrier-grade NAT on both ends) the direct connection can fail — one of you trying a different network (a phone hotspot) usually fixes it. Hosting needs the Nexus audio engine.
+Audio goes straight between your PCs (WebRTC, encrypted, Opus at 320 kbps — near-transparent, not lossless). To find each other, both apps swap connection details through a public ntfy.sh channel named after the code, encrypted with a key made from the code, so the relay only sees scrambled data. If both of you are behind very strict routers (e.g. carrier-grade NAT on both ends) the direct connection can fail — one of you trying a different network (a phone hotspot) usually fixes it. Nexus 1 and Nexus 2 can jam together.
 
 ## visualizer & glow
 
@@ -73,7 +82,7 @@ Audio goes straight between your PCs (WebRTC, encrypted, Opus at 320 kbps — ne
 - **record ring**: the dot ring around the spinning record in the now-playing panel dances to the music.
 - **album-art glow**: a soft blur of the current cover behind the whole app, fading between songs. Strength is adjustable.
 
-All of it is in settings → look → *background & visualizer* (style, colour, sensitivity, glow on/off + strength, record ring on/off). The visualizer reads what the Nexus audio engine is actually playing, after the EQ; with the basic Qt player it has nothing to show.
+All of it is in settings → look → *background & visualizer* (style, colour, sensitivity, glow on/off + strength, record ring on/off). The visualizer reads what the audio engine is actually playing, after the EQ.
 
 ## free & legal sources (Internet Archive, Jamendo)
 
@@ -95,7 +104,7 @@ Set it up in **settings → downloads**:
 
 **Searching:** Soulseek only returns files whose names contain *every* word you type, so long searches often find nothing. Nexus tidies the search (dashes, brackets) and, if nothing comes back, retries without words like *deluxe / edition / remastered*, then with just the first few words. If there are still no results it checks why: whether other users can reach you (it asks slsknet.org's port test) and whether Windows Firewall is set up, and tells you which one it is. *Test port* in settings → downloads runs the same check.
 
-**Windows Firewall:** other users have to be able to connect to you, or many downloads never start. The installer sets that up (one *Yes* on the admin prompt); if it's missing, the Download page shows a **fix firewall** button. It only opens Nexus's two Soulseek ports (2234/2235 by default) for Python. If Windows ever pops up *"Windows Defender Firewall has blocked some features of Python"*, tick **Private networks** and click **Allow**.
+**Windows Firewall:** other users have to be able to connect to you, or many downloads never start. The installer sets that up (one *Yes* on the admin prompt); if it's missing, the Download page shows a **fix firewall** button. It only opens Nexus's two Soulseek ports (2234/2235 by default) for Nexus. If Windows ever pops up *"Windows Defender Firewall has blocked some features of Nexus"*, tick **Private networks** and click **Allow**.
 
 ### watch folder
 Settings → downloads → watch folder: point it at e.g. `Downloads` and tick *watch it*. Any new FLAC/MP3/etc. or **zip** that lands there is sorted into your library automatically. Files that were already in the folder are left alone, and half-finished browser downloads (`.crdownload`, `.part`) are skipped until they finish.
@@ -175,7 +184,7 @@ Switch in settings → look → layout. The layout you pick stays when you chang
 
 ## skins
 
-Settings → **skins** (or the *change skin* button in Look). A skin changes the whole look: colours, fonts, corner radius, layout, buttons, progress-bar style, glyphs, visualizer, the glow, a **background image or video** and its own **stylesheet** (Qt CSS, the Spicetify-style bit).
+Settings → **skins** (or the *change skin* button in Look). A skin changes the whole look: colours, fonts, corner radius, layout, buttons, progress-bar style, glyphs, visualizer, the glow, a **background image or video** and its own **stylesheet** (the Spicetify-style bit — Nexus 2 reads the parts of it that make sense in the new UI: panel borders, the main buttons and heading colours).
 
 - **use one**: click its card. Nexus comes with *Aurora* and *Lava* (animated video backgrounds), *Midnight Gold*, *Forest*, *Sakura*, *Vapor*, *Glass*, *Paper*, *Crimson*, *Amber CRT* and *Green Screen*, plus the built-in looks.
 - **video backgrounds**: Look → **background image / video** takes any image or video (`.mp4`, `.webm`, `.mov`, `.mkv`) and puts it behind everything, over whatever skin you're on. Videos play silently on a loop and pause while Nexus is minimised. *Background opacity* and *blur* apply to both. Saving a skin takes your background with it (video included, up to ~145 MB), so you can share animated skins.
@@ -188,7 +197,7 @@ Skins carry no code: only look settings, a stylesheet, images, videos and fonts,
 A `.nexusskin` is a zip:
 ```
 skin.json        name, author, description, colors, settings, background
-style.qss        optional Qt stylesheet
+style.qss        optional stylesheet
 assets/          images or a video (background.mp4 + poster.jpg for the gallery card), anything the stylesheet uses
 fonts/           .ttf / .otf, loaded while the skin is active
 ```
@@ -251,7 +260,6 @@ Settings (`Ctrl+,`) open inside the window with the sections listed on the left.
 - progress / volume bar: dots, line, or text chars (`━─`, `█░`, `━─●`)
 - song columns, album sort (artist / title / year / recently added)
 - **window opacity** (restart): set below 100 for a see-through background; with `decoration { blur { enabled = true } }` in Hyprland you get frosted glass behind it while text stays fully opaque
-- custom QSS for anything else (object names: `#rail #card #nowpanel #sidebar #npbar #search #nav #pill #pillPrimary #h1 #eyebrow #badge #time`)
 
 Config: `~/.config/nexus/config.json` (Windows: `%APPDATA%\nexus`). `NEXUS_HOME=/some/dir` for portable mode.
 
@@ -280,7 +288,7 @@ Click the right-hand time to toggle remaining time.
 
 ## notes
 
-- Media keys work while focused; global media keys / waybar need MPRIS (not built in yet).
+- Media keys and desktop widgets work through MPRIS on Linux (GNOME, KDE, waybar, `playerctl`) and the media overlay on Windows.
 
 ## icon
 
@@ -290,10 +298,6 @@ Click the right-hand time to toggle remaining time.
 
 No account, no telemetry, no ads. [PRIVACY.md](PRIVACY.md) lists every connection Nexus makes and how to turn it off; **offline mode** (settings → advanced) stops all web lookups at once. [SECURITY.md](SECURITY.md) covers how Nexus handles untrusted stuff (Soulseek files, jam peers, shared skins, tags) and how to report a vulnerability privately.
 
-## Windows .exe
-
-Every release also has **NexusSetup.exe** (a normal per-user installer, built by GitHub Actions from this source — no admin needed, uninstall from Settings → Apps). It updates itself the same way. Until it's code-signed, Smart App Control blocks it, so `install.ps1` stays the recommended install; see [CODE_SIGNING.md](CODE_SIGNING.md).
-
 ## license
 
-GPL-3.0 (see `LICENSE`) — Nexus uses [aioslsk](https://github.com/JurgenR/aioslsk), which is GPL-3.0. Bundled fonts (Inter, Doto) are under the SIL Open Font License (`fonts/`).
+GPL-3.0 (see `LICENSE`). Nexus 2 is built on [egui](https://github.com/emilk/egui), [FFmpeg](https://ffmpeg.org), [cpal](https://github.com/RustAudio/cpal), [lofty](https://github.com/Serial-ATA/lofty-rs), [webrtc-rs](https://github.com/webrtc-rs/webrtc) and [soulseek-rs](https://github.com/michel/soulseek-rs). Bundled fonts (Inter, Doto) are under the SIL Open Font License (`fonts/`).

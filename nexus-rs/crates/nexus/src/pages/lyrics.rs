@@ -27,11 +27,10 @@ impl LyricsState {
             let l = read_lyrics(Path::new(path));
             self.cache.insert(path.to_string(), l);
             self.order.push_back(path.to_string());
-            if self.order.len() > 300 {
-                if let Some(old) = self.order.pop_front() {
+            if self.order.len() > 300
+                && let Some(old) = self.order.pop_front() {
                     self.cache.remove(&old);
                 }
-            }
         }
         self.cache.get(path).cloned().flatten()
     }

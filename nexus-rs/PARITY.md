@@ -19,7 +19,7 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] 10-band linear-phase FIR EQ + preamp (same impulse as Python), click-free curve changes
 - [x] ReplayGain (track / album + preamp), volume curve, soft limiter
 - [x] Device loss → reopen
-- [ ] WASAPI exclusive mode (Windows)
+- [x] WASAPI exclusive mode (Windows): file's own rate, best integer format, event driven, falls back to shared mode — built and packaged in CI, not yet tried on a real Windows PC
 - [x] Output device list / pick in settings
 
 ## Stage 2 — GUI shell (`nexus`, egui)
@@ -32,7 +32,7 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] Layouts: studio, classic, tabs, focus, mini (+ pin on top)
 - [x] Ambient cover glow behind the window, toasts
 - [x] Single instance on Linux/macOS (talks to a running Python Nexus too)
-- [ ] Single instance on Windows (named pipe)
+- [x] Single instance on Windows (named pipe `\\.\pipe\nexus-<user>`, same as Nexus 1's QLocalServer) — built in CI, not yet tried on a real Windows PC
 - [x] File drops + `nexus FILE…` (skins, album zips, exports, audio, cover images)
 
 ## Stage 3 — look & feel
@@ -72,7 +72,9 @@ Legend: `[x]` done and tested · `[~]` started · `[ ]` not started
 - [x] Song / album requests and file transfer (ask / always / never, size and type limits, only expected transfers, straight into the library)
 
 ## Stage 7 — packaging
-- [ ] Nix flake: package, dev shell, NixOS module-free install (desktop file, icon, MPRIS)
-- [ ] Windows: release build, installer, code signing hook (SignPath)
-- [ ] CI: Linux + Windows builds and tests on the `rust` branch
-- [ ] README / migration notes
+- [x] Nix flake: package (self-test during the build), dev shell, overlay, apps, desktop file + icons; `nexus1` still builds the Python app
+- [x] Windows: release build with FFmpeg's DLLs, exe icon + version info, Inno Setup installer (`nexus2-setup-x64.exe`, installs over Nexus 1), portable zip; code signing hook for SignPath (waiting on the certificate)
+- [x] Linux: portable zip with FFmpeg built in (needs only glibc 2.35+, ALSA, libopus)
+- [x] CI: Nix build + self-test, Linux tests + clippy, Windows build + self-test + installer, static Linux zip — on every push to `rust`
+- [x] Releases: `v2.*` tags → pre-release with all three downloads (never "latest" until the switch)
+- [x] README / migration notes

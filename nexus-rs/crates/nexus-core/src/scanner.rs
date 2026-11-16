@@ -186,11 +186,10 @@ pub fn scan(folders: &[PathBuf], old: &[Arc<Track>], covers: &Path, full: bool, 
             progress.done.fetch_add(1, Ordering::Relaxed);
             let mtime = mtime_of(p)?;
             let key = p.to_string_lossy();
-            if let Some(t) = old.get(key.as_ref()) {
-                if (t.mtime - mtime).abs() < 0.001 {
+            if let Some(t) = old.get(key.as_ref())
+                && (t.mtime - mtime).abs() < 0.001 {
                     return Some(Track::clone(t));
                 }
-            }
             let mut t = read_track(p)?;
             t.mtime = mtime;
             Some(t)

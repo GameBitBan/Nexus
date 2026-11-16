@@ -37,11 +37,10 @@ pub fn tap() -> (Tap, Feed) {
     let tap: Tap = Box::new(move |data: &[f32], sr: u32| {
         r2.store(sr, Ordering::Relaxed);
         let n = data.len().min(prod.slots()) & !1;
-        if n > 0 {
-            if let Ok(chunk) = prod.write_chunk_uninit(n) {
+        if n > 0
+            && let Ok(chunk) = prod.write_chunk_uninit(n) {
                 chunk.fill_from_iter(data[..n].iter().copied());
             }
-        }
     });
     (tap, Feed { cons, rate })
 }
@@ -215,14 +214,13 @@ pub fn run_encoder(mut feed: Feed, stop: Arc<AtomicBool>, idle: impl Fn() -> boo
         // what was played since last time
         raw.clear();
         let avail = feed.cons.slots() & !1;
-        if avail > 0 {
-            if let Ok(chunk) = feed.cons.read_chunk(avail) {
+        if avail > 0
+            && let Ok(chunk) = feed.cons.read_chunk(avail) {
                 let (a, b) = chunk.as_slices();
                 raw.extend_from_slice(a);
                 raw.extend_from_slice(b);
                 chunk.commit_all();
             }
-        }
         res.push(&raw, feed.rate.load(Ordering::Relaxed), &mut buf);
         // running behind (a hiccup on this end): drop the backlog so the delay stays short
         if buf.len() > RATE as usize * 2 * 6 / 10 {
@@ -381,11 +379,10 @@ impl GuestOutput {
     /// Interleaved stereo at `self.rate`.
     pub fn push(&mut self, pcm: &[f32]) {
         let n = pcm.len().min(self.prod.slots()) & !1;
-        if n > 0 {
-            if let Ok(chunk) = self.prod.write_chunk_uninit(n) {
+        if n > 0
+            && let Ok(chunk) = self.prod.write_chunk_uninit(n) {
                 chunk.fill_from_iter(pcm[..n].iter().copied());
             }
-        }
     }
 }
 

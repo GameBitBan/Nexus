@@ -206,11 +206,10 @@ fn read_vorbis(vc: &VorbisComments, out: &mut Tags) {
     }
     for (f, keys) in [("tracknumber", ["TRACKTOTAL", "TOTALTRACKS"]), ("discnumber", ["DISCTOTAL", "TOTALDISCS"])] {
         let n = out.get(f).to_string();
-        if !n.is_empty() && !n.contains('/') {
-            if let Some(t) = keys.iter().find_map(|k| vc.get(k)) {
+        if !n.is_empty() && !n.contains('/')
+            && let Some(t) = keys.iter().find_map(|k| vc.get(k)) {
                 out.fields.insert(f.into(), format!("{n}/{t}"));
             }
-        }
     }
 }
 
@@ -259,11 +258,10 @@ fn read_id3(t: &Id3v2Tag, out: &mut Tags) {
         };
         out.fields.insert(f.into(), v);
     }
-    if out.get("date").is_empty() {
-        if let Some(y) = t.get_text(&FrameId::new("TYER").expect("valid id")) {
+    if out.get("date").is_empty()
+        && let Some(y) = t.get_text(&FrameId::new("TYER").expect("valid id")) {
             out.fields.insert("date".into(), y.to_string());
         }
-    }
     let comms: Vec<&CommentFrame> = t.comments().collect();
     if let Some(c) = comms.iter().find(|c| c.description.is_empty()).or(comms.first()) {
         out.fields.insert("comment".into(), c.content.to_string());
@@ -396,8 +394,8 @@ pub fn read_tags(path: &Path, folder: bool) -> Result<Tags, String> {
             let f = lofty::mp4::Mp4File::read_from(&mut file, opts()).map_err(|e| e.to_string())?;
             if let Some(il) = f.ilst() {
                 for (fld, _) in FIELDS {
-                    if let Some(code) = mp4_atom(fld) {
-                        if let Some(atom) = il.get(&lofty::mp4::AtomIdent::Fourcc(code)) {
+                    if let Some(code) = mp4_atom(fld)
+                        && let Some(atom) = il.get(&lofty::mp4::AtomIdent::Fourcc(code)) {
                             let vals: Vec<String> = atom
                                 .data()
                                 .filter_map(|d| match d {
@@ -409,7 +407,6 @@ pub fn read_tags(path: &Path, folder: bool) -> Result<Tags, String> {
                                 out.fields.insert(fld.into(), vals.join("; "));
                             }
                         }
-                    }
                 }
                 let pair = |n: Option<u32>, t: Option<u32>| match (n.unwrap_or(0), t.unwrap_or(0)) {
                     (0, 0) => String::new(),
@@ -680,8 +677,8 @@ pub fn online_album_lookup(artist: &str, album: &str) -> Option<AlbumInfo> {
     let q = crate::net::query(&[("term", &format!("{artist} {album}")), ("entity", "album"), ("limit", "15")]);
     if let Ok(v) = crate::net::get_json(&format!("https://itunes.apple.com/search?{q}")) {
         let res = v.get("results").and_then(|r| r.as_array()).cloned().unwrap_or_default();
-        if let Some(b) = res.iter().max_by_key(|x| score(&s(x, "collectionName"), &s(x, "artistName"))) {
-            if score(&s(b, "collectionName"), &s(b, "artistName")) >= 3 {
+        if let Some(b) = res.iter().max_by_key(|x| score(&s(x, "collectionName"), &s(x, "artistName")))
+            && score(&s(b, "collectionName"), &s(b, "artistName")) >= 3 {
                 return Some(AlbumInfo {
                     name: s(b, "collectionName"),
                     artist: s(b, "artistName"),
@@ -691,24 +688,21 @@ pub fn online_album_lookup(artist: &str, album: &str) -> Option<AlbumInfo> {
                     source: "iTunes".into(),
                 });
             }
-        }
     }
     let q = crate::net::query(&[("q", &format!("artist:\"{artist}\" album:\"{album}\"")), ("limit", "15")]);
     if let Ok(v) = crate::net::get_json(&format!("https://api.deezer.com/search/album?{q}")) {
         let res = v.get("data").and_then(|r| r.as_array()).cloned().unwrap_or_default();
         let who = |x: &serde_json::Value| x.get("artist").map(|a| s(a, "name")).unwrap_or_default();
-        if let Some(b) = res.iter().max_by_key(|x| score(&s(x, "title"), &who(x))) {
-            if score(&s(b, "title"), &who(b)) >= 3 {
+        if let Some(b) = res.iter().max_by_key(|x| score(&s(x, "title"), &who(x)))
+            && score(&s(b, "title"), &who(b)) >= 3 {
                 let mut out = AlbumInfo { name: s(b, "title"), artist: who(b), cover_url: s(b, "cover_xl"), source: "Deezer".into(), ..Default::default() };
-                if let Some(id) = b.get("id").and_then(|x| x.as_i64()) {
-                    if let Ok(d) = crate::net::get_json(&format!("https://api.deezer.com/album/{id}")) {
+                if let Some(id) = b.get("id").and_then(|x| x.as_i64())
+                    && let Ok(d) = crate::net::get_json(&format!("https://api.deezer.com/album/{id}")) {
                         out.year = s(&d, "release_date").chars().take(4).collect();
                         out.genre = d.pointer("/genres/data/0/name").and_then(|x| x.as_str()).unwrap_or("").to_string();
                     }
-                }
                 return Some(out);
             }
-        }
     }
     None
 }

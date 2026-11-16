@@ -177,8 +177,8 @@ fn dial(app: &mut Nexus, ui: &mut Ui, s: f32) {
     p.circle_stroke(ctr, rc, Stroke::new(1.0, alpha(c.text, 0.12)));
     p.circle_filled(ctr, rc * 0.05, dim);
 
-    if resp.clicked() {
-        if let Some(pos) = resp.interact_pointer_pos() {
+    if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos() {
             let (x, y) = (pos.x - ctr.x, pos.y - ctr.y);
             let dist = (x * x + y * y).sqrt();
             if dist >= rr - 16.0 {
@@ -188,5 +188,4 @@ fn dial(app: &mut Nexus, ui: &mut Ui, s: f32) {
                 app.acts.push(Act::TogglePlay);
             }
         }
-    }
 }

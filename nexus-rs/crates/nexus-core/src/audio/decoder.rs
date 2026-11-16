@@ -107,11 +107,10 @@ fn wait_drained(shared: &Shared, chain: &Chain, cmds: &Receiver<Cmd>) -> Option<
         if shared.played.load(Ordering::SeqCst) >= chain.pushed || shared.state() == State::Stopped {
             return None;
         }
-        if let Ok(c) = cmds.recv_timeout(Duration::from_millis(10)) {
-            if !matches!(c, Cmd::Seek(_)) {
+        if let Ok(c) = cmds.recv_timeout(Duration::from_millis(10))
+            && !matches!(c, Cmd::Seek(_)) {
                 return Some(c);
             }
-        }
     }
 }
 

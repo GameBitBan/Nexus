@@ -39,7 +39,6 @@ enum Slot {
 }
 
 pub struct Covers {
-    dir: PathBuf,
     map: HashMap<(String, Kind), (Slot, u64)>,
     colors: HashMap<String, Option<Color32>>,
     tick: u64,
@@ -73,11 +72,7 @@ impl Covers {
                 })
                 .expect("spawn cover thread");
         }
-        Covers { dir, map: HashMap::new(), colors: HashMap::new(), tick: 0, generation: 0, jobs: jtx, done: drx }
-    }
-
-    pub fn dir(&self) -> &PathBuf {
-        &self.dir
+        Covers { map: HashMap::new(), colors: HashMap::new(), tick: 0, generation: 0, jobs: jtx, done: drx }
     }
 
     /// Forget everything (after a rescan or tag edit changed covers on disk).
@@ -167,10 +162,6 @@ impl Covers {
         }
         self.blurred(key);
         None
-    }
-
-    pub fn exists(&self, key: &str) -> bool {
-        !key.is_empty() && self.dir.join(format!("{key}.jpg")).exists()
     }
 
     /// Draws a cover (or the placeholder) into `rect` with the theme's rounding.

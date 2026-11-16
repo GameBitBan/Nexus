@@ -284,12 +284,11 @@ fn dot_slider(ui: &mut Ui, t: &crate::theme::Theme, id: egui::Id, r: Rect, v: f3
     let mut out = None;
     if resp.double_clicked() {
         out = Some(0.0);
-    } else if resp.is_pointer_button_down_on() {
-        if let Some(pos) = resp.interact_pointer_pos() {
+    } else if resp.is_pointer_button_down_on()
+        && let Some(pos) = resp.interact_pointer_pos() {
             let frac = (pos.y - r.top() - m) / (r.height() - 2.0 * m).max(1.0);
             out = Some(snap(hi - frac * (hi - lo)));
         }
-    }
     if resp.hovered() {
         let dy = ui.input(|i| i.smooth_scroll_delta.y);
         if dy.abs() > 0.5 {

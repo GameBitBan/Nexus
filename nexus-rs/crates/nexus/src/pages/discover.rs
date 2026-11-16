@@ -118,8 +118,8 @@ impl Nexus {
 
     /// Every frame: preview finished? left the page?
     pub fn discover_tick(&mut self) {
-        if let Some(rx) = &self.discover.rx {
-            if let Ok(res) = rx.try_recv() {
+        if let Some(rx) = &self.discover.rx
+            && let Ok(res) = rx.try_recv() {
                 self.discover.rx = None;
                 match res {
                     Ok((key, path, label)) if self.discover.loading == key => {
@@ -153,7 +153,6 @@ impl Nexus {
                     }
                 }
             }
-        }
         if let Some(e) = &self.discover.engine {
             let ended = e.poll().iter().any(|ev| matches!(ev, Event::Ended | Event::Error(_)));
             if ended && !self.discover.playing.is_empty() {
@@ -341,11 +340,10 @@ fn sections(app: &mut Nexus, ui: &mut Ui, t: &Theme, w: f32) -> Option<ActFn> {
         });
     }
     // ---- detail of the selected recommendation
-    if let Some(r) = app.discover.sel.and_then(|id| data.recs.iter().find(|r| r.id == id)) {
-        if let Some(a) = detail(app, ui, t, r, w) {
+    if let Some(r) = app.discover.sel.and_then(|id| data.recs.iter().find(|r| r.id == id))
+        && let Some(a) = detail(app, ui, t, r, w) {
             act = Some(a);
         }
-    }
     let imgs = app.discover.imgs.as_mut()?;
     // ---- artists you might like
     if !data.recs.is_empty() {

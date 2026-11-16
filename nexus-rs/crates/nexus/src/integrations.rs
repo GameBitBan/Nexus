@@ -65,17 +65,16 @@ impl Nexus {
             self.presence_seen = seen;
             self.push_presence();
         }
-        if let Some(due) = self.presence_due {
-            if now >= due {
+        if let Some(due) = self.presence_due
+            && now >= due {
                 self.presence_due = None;
                 if self.cfg.b("discord_enabled") {
                     let u = self.presence_update();
                     self.discord.send(u);
                 }
             }
-        }
-        if let Some(rx) = &self.discord_offer {
-            if let Ok(running) = rx.try_recv() {
+        if let Some(rx) = &self.discord_offer
+            && let Ok(running) = rx.try_recv() {
                 self.discord_offer = None;
                 if running {
                     self.cfg.set("discord_offered", true);
@@ -93,7 +92,6 @@ impl Nexus {
                     );
                 }
             }
-        }
     }
 
     /// Once: if Discord is open, offer to show what you're playing.

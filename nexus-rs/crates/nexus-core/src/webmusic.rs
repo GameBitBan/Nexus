@@ -145,7 +145,7 @@ pub fn archive_files(row: &mut WebRow, lossless: bool) -> Result<(Vec<WebFile>, 
         });
     }
     let num = |t: &str| t.chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u32>().unwrap_or(9999);
-    out.sort_by(|a, b| (num(&a.track), a.name.to_lowercase()).cmp(&(num(&b.track), b.name.to_lowercase())));
+    out.sort_by_key(|a| (num(&a.track), a.name.to_lowercase()));
     if row.artist.is_empty() {
         row.artist = one(d.pointer("/metadata/creator"));
     }
@@ -437,13 +437,11 @@ impl WebDownloads {
             return;
         }
         // cover art next to the files, so it gets imported too
-        if !job.row.cover.is_empty() && host_ok(&job.row.cover, &src) {
-            if let Ok(d) = net::get_bytes(&job.row.cover, 30, 12_000_000) {
-                if d.starts_with(b"\xff\xd8\xff") || d.starts_with(b"\x89PNG\r\n\x1a\n") {
+        if !job.row.cover.is_empty() && host_ok(&job.row.cover, &src)
+            && let Ok(d) = net::get_bytes(&job.row.cover, 30, 12_000_000)
+                && (d.starts_with(b"\xff\xd8\xff") || d.starts_with(b"\x89PNG\r\n\x1a\n")) {
                     let _ = std::fs::write(folder.join(if d.starts_with(b"\x89PNG") { "cover.png" } else { "cover.jpg" }), d);
                 }
-            }
-        }
         self.update(job.id, |j| {
             j.state = if j.paths.is_empty() { format!("failed ({})", if j.error.is_empty() { "nothing downloaded" } else { &j.error }) } else { "ready".into() };
         });

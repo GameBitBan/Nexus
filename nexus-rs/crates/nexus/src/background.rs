@@ -64,15 +64,14 @@ impl Background {
 
     /// Once per frame: take a decoded image or the newest video frame.
     pub fn pump(&mut self, ctx: &egui::Context, hidden: bool) {
-        if let Some(rx) = &self.image_rx {
-            if let Ok(img) = rx.try_recv() {
+        if let Some(rx) = &self.image_rx
+            && let Ok(img) = rx.try_recv() {
                 self.image_rx = None;
                 if let Some(img) = img {
                     self.size = img.size;
                     self.tex = Some(ctx.load_texture("background", img, TextureOptions::LINEAR));
                 }
             }
-        }
         if let Some(v) = &self.video {
             v.paused.store(hidden, Ordering::Relaxed);
             if let Some(img) = v.frames.try_iter().last() {
@@ -83,10 +82,6 @@ impl Background {
                 }
             }
         }
-    }
-
-    pub fn is_video(&self) -> bool {
-        self.video.is_some()
     }
 }
 

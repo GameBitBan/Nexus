@@ -169,11 +169,10 @@ pub fn clip(mut d: Map<String, Value>) -> Map<String, Value> {
         let items: Vec<Value> = items.iter().take(250).filter(|x| x.as_array().is_some_and(|a| a.len() >= 5)).cloned().collect();
         d.insert("items".into(), Value::Array(items));
     }
-    if let Some(ly) = d.get("lyrics") {
-        if !ly.is_null() && (!ly.is_object() || ly.to_string().len() > 200_000) {
+    if let Some(ly) = d.get("lyrics")
+        && !ly.is_null() && (!ly.is_object() || ly.to_string().len() > 200_000) {
             d.insert("lyrics".into(), Value::Null);
         }
-    }
     d
 }
 
@@ -487,8 +486,8 @@ impl Session {
         {
             let (s, p) = (self.clone(), peer.to_string());
             dc.on_message(Box::new(move |m: DataChannelMessage| {
-                if m.is_string {
-                    if let Ok(Value::Object(mut d)) = serde_json::from_slice::<Value>(&m.data) {
+                if m.is_string
+                    && let Ok(Value::Object(mut d)) = serde_json::from_slice::<Value>(&m.data) {
                         let name = s.peers.lock().get(&p).map(|x| x.name.clone()).unwrap_or_else(|| "friend".into());
                         d.insert("peer".into(), json!(p));
                         d.insert("name".into(), json!(name));
@@ -496,7 +495,6 @@ impl Session {
                             s.emit(Event::Msg(clip(d)));
                         }
                     }
-                }
                 Box::pin(async {})
             }));
         }
@@ -507,13 +505,11 @@ impl Session {
                 Box::pin(async move {
                     if matches!(st, RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed) {
                         let current = s.peers.lock().get(&p).map(|x| x.pc.clone());
-                        if let (Some(cur), Some(me)) = (current, weak.upgrade()) {
-                            if Arc::ptr_eq(&cur, &me) {
-                                if let Some(gone) = s.drop_peer(&p).await {
+                        if let (Some(cur), Some(me)) = (current, weak.upgrade())
+                            && Arc::ptr_eq(&cur, &me)
+                                && let Some(gone) = s.drop_peer(&p).await {
                                     s.msg(json!({"t": "left", "peer": p, "name": gone.name, "failed": st == RTCPeerConnectionState::Failed}));
                                 }
-                            }
-                        }
                     }
                 })
             }));
@@ -575,12 +571,11 @@ impl Session {
         // keep listening: the host says bye when they end the jam
         let host_id = offer.get("from").and_then(Value::as_str).unwrap_or("").to_string();
         while !self.stopped() {
-            if let Some(m) = self.next(&mut inbox, Duration::from_secs(3600)).await {
-                if m.get("k").and_then(Value::as_str) == Some("bye") && m.get("from").and_then(Value::as_str) == Some(host_id.as_str()) {
+            if let Some(m) = self.next(&mut inbox, Duration::from_secs(3600)).await
+                && m.get("k").and_then(Value::as_str) == Some("bye") && m.get("from").and_then(Value::as_str) == Some(host_id.as_str()) {
                     self.state("ended", "the jam ended");
                     return;
                 }
-            }
         }
     }
 
@@ -780,11 +775,10 @@ impl Session {
                 break;
             }
         }
-        if let Some(c) = &ch {
-            if c.ready_state() == RTCDataChannelState::Open {
+        if let Some(c) = &ch
+            && c.ready_state() == RTCDataChannelState::Open {
                 let _ = c.send_text(json!({"t": "fdone", "rid": rid, "ok": ok}).to_string()).await;
             }
-        }
         self.sending.lock().remove(&rid);
         self.msg(json!({"t": "fsent", "rid": rid, "peer": peer, "sent": sent, "total": total, "done": true, "ok": ok, "n": n}));
     }
@@ -1170,11 +1164,10 @@ impl Jam {
     }
 
     pub fn cancel_send(&self, rid: &str) {
-        if let Some(s) = &self.sess {
-            if let Some(c) = s.sending.lock().get(rid) {
+        if let Some(s) = &self.sess
+            && let Some(c) = s.sending.lock().get(rid) {
                 c.store(true, Ordering::Relaxed);
             }
-        }
     }
 
     /// Guest: a download we asked for (files for any other request id are ignored).

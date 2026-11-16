@@ -44,7 +44,7 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui) {
     let bar_h = 88.0;
     let outer = if classic { full } else { Rect::from_min_max(full.min + vec2(8.0, 8.0), full.max - vec2(8.0, 0.0)) };
     let bar = Rect::from_min_max(pos2(full.left(), full.bottom() - bar_h), full.max);
-    let body = Rect::from_min_max(outer.min, pos2(outer.right(), bar.top() - if classic { 0.0 } else { 0.0 }));
+    let body = Rect::from_min_max(outer.min, pos2(outer.right(), bar.top()));
     match lay.as_str() {
         "classic" => classic_shell(app, ui, body),
         "tabs" => tabs_shell(app, ui, body),
@@ -186,7 +186,7 @@ pub fn thousands(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
@@ -741,11 +741,9 @@ fn draw_toast(app: &mut Nexus, ui: &mut Ui, full: Rect, bar_h: f32) {
             tt.until = tt.until.max(now + 1.5);
         }
     }
-    if clicked {
-        if let Some(tt) = app.toast.take() {
-            if let Some((_, f)) = tt.action {
+    if clicked
+        && let Some(tt) = app.toast.take()
+            && let Some((_, f)) = tt.action {
                 f(app);
             }
-        }
-    }
 }

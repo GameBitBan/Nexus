@@ -144,13 +144,12 @@ impl Nexus {
                 }
             }
         }
-        if let Some(d) = due {
-            if now >= d && self.scan.is_none() {
+        if let Some(d) = due
+            && now >= d && self.scan.is_none() {
                 if let Some(im) = &mut self.importing {
                     im.rescan_due = None;
                 }
                 self.rescan(false);
             }
-        }
     }
 }

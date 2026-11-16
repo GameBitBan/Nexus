@@ -31,11 +31,10 @@ pub fn draw(app: &mut Nexus, ui: &mut Ui, rect: Rect) {
                     "guest" | "joining" => Some("leave"),
                     _ => None,
                 };
-                if let Some(l) = label {
-                    if widgets::pill(ui, &t, l, Pill::Normal).clicked() {
+                if let Some(l) = label
+                    && widgets::pill(ui, &t, l, Pill::Normal).clicked() {
                         later = Some(Box::new(|a: &mut Nexus| a.jam_leave()));
                     }
-                }
             });
         });
         let status = if app.jam.status.is_empty() { "listen together with a friend — one of you hosts, the other joins".to_string() } else { app.jam.status.clone() };
