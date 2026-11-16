@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths: ["nexus.py"]
-    tags: ["v*"]
+    tags: ["v1.*"]   # v2.* tags are Nexus 2 (release2.yml)
   workflow_dispatch:
 
 permissions:

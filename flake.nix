@@ -59,7 +59,7 @@
         meta = {
           description = "Local lossless music player — text-style UI, skins, Soulseek, listen together";
           homepage = "https://github.com/GameBitBan/Nexus";
-          license = pkgs.lib.licenses.mit;
+          license = pkgs.lib.licenses.gpl3Plus;
           mainProgram = "nexus";
           platforms = systems;
         };

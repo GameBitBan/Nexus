@@ -1,7 +1,8 @@
 # Nexus 2 (Rust): build + test on every push to the rust branch.
 #  - nix: the flake builds, its tests pass, and the packaged app passes --selftest (NixOS install path)
 #  - linux: cargo test + clippy against Ubuntu's libraries
-#  - windows: release build with FFmpeg's shared libraries, --selftest, a zip ready to try
+#  - windows: release build with FFmpeg's shared libraries, --selftest, the installer and a zip ready to try
+#  - linux-static: the release's Linux zip (FFmpeg linked in), --selftest
 name: rust
 
 on:
@@ -92,17 +93,57 @@ jobs:
           Copy-Item nexus-rs\target\release\nexus.exe "$d\Nexus.exe"
           Copy-Item "$env:FFMPEG_DIR\bin\*.dll" $d
           Copy-Item -Recurse fonts, icons, skins $d
-          Copy-Item LICENSE, README.md $d
+          Copy-Item LICENSE, README.md, PRIVACY.md $d
       - name: selftest
         shell: pwsh
         run: |
           $p = Start-Process -FilePath dist\Nexus\Nexus.exe -ArgumentList '--selftest', "$PWD\selftest.txt" -Wait -PassThru
           Get-Content selftest.txt
           if ($p.ExitCode -ne 0) { throw "self-test failed" }
-      - name: zip
+      - name: installer + zip
         shell: pwsh
-        run: Compress-Archive dist\Nexus nexus2-windows-x64.zip
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /DAppVersion=2.0.0 nexus-rs\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+          Compress-Archive dist\Nexus dist\nexus2-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: nexus2-windows-x64
-          path: nexus2-windows-x64.zip
+          path: |
+            dist/nexus2-setup-x64.exe
+            dist/nexus2-windows-x64.zip
+
+  # the release's Linux zip: FFmpeg built from source and linked in, so it runs on any distro
+  linux-static:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q pkg-config clang libclang-dev nasm libopus-dev libasound2-dev \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev zip
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nexus-rs
+          key: release-static
+      - name: build (FFmpeg built in)
+        working-directory: nexus-rs
+        run: cargo build --release -p nexus --features static-ffmpeg
+      - name: package + self-test
+        run: |
+          ldd nexus-rs/target/release/nexus
+          if ldd nexus-rs/target/release/nexus | grep -E 'libav(codec|format|util)'; then echo "::error::FFmpeg isn't linked in"; exit 1; fi
+          mkdir -p dist/Nexus
+          cp nexus-rs/target/release/nexus dist/Nexus/
+          cp -r fonts icons skins nexus.desktop LICENSE README.md PRIVACY.md dist/Nexus/
+          (cd dist && zip -qr nexus2-linux-x86_64.zip Nexus)
+          HOME=$RUNNER_TEMP NEXUS_HOME=$RUNNER_TEMP/nx ./dist/Nexus/nexus --selftest selftest.txt || (cat selftest.txt; exit 1)
+          cat selftest.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus2-linux-x86_64
+          path: dist/nexus2-linux-x86_64.zip

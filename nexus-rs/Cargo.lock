@@ -3146,6 +3146,8 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "souvlaki",
+ "windows-sys 0.61.2",
+ "winresource",
 ]
 
 [[package]]
@@ -3185,6 +3187,7 @@ dependencies = [
  "unicode-normalization",
  "ureq",
  "walkdir",
+ "wasapi",
  "webrtc",
  "windows-sys 0.61.2",
  "zip",
@@ -5659,6 +5662,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasapi"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58b35dbcb6fae6fbaba9f6f52a22686bb405978ee112ed6eb33d98bd63c97583"
+dependencies = [
+ "log",
+ "num-integer",
+ "thiserror 2.0.21",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "wasi"
 version = "0.11.1+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6501,6 +6517,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
+dependencies = [
+ "version_check",
 ]
 
 [[package]]

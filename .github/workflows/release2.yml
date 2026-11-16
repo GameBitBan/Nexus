@@ -1,0 +1,164 @@
+# Nexus 2 (Rust) releases: push a tag like v2.0.0 on the rust branch (or run it by hand with a version).
+#  - Windows: nexus2-setup-x64.exe (installer, what the in-app updater runs) + nexus2-windows-x64.zip (portable)
+#  - Linux:   nexus2-linux-x86_64.zip (FFmpeg built in, runs on any recent distro; NixOS uses the flake)
+# Published as a pre-release, never "latest": Nexus 1 updates from the latest release and would pick up a
+# Nexus 2 zip. Switching everyone over is a separate, deliberate step.
+name: release2
+
+on:
+  push:
+    tags: ["v2.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "version, like 2.0.0 (the tag v<version> is created)"
+        required: true
+      publish:
+        description: "publish the release (off: just build and test everything)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nexus-rs
+          key: release
+      - name: version
+        shell: bash
+        run: |
+          V="${VERSION#v}"; echo "V=$V" >> "$GITHUB_ENV"
+          sed -i "s/^version = \"2\.0\.0-dev\"/version = \"$V\"/" nexus-rs/Cargo.toml
+          grep -m1 '^version' nexus-rs/Cargo.toml
+      - name: FFmpeg (shared libraries + headers)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = gh release view latest --repo BtbN/FFmpeg-Builds --json assets --jq '.assets[].name' |
+            Where-Object { $_ -match '^ffmpeg-n(\d+)\.(\d+)-latest-win64-gpl-shared-\d+\.\d+\.zip$' -and ([version]"$($Matches[1]).$($Matches[2])" -le [version]"8.1") }
+          $pick = $assets | Sort-Object { [version]($_ -replace '^ffmpeg-n(\d+\.\d+).*','$1') } | Select-Object -Last 1
+          if (-not $pick) { throw "no FFmpeg build found: $($assets -join ', ')" }
+          Write-Host "using $pick"
+          gh release download latest --repo BtbN/FFmpeg-Builds --pattern $pick --output ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
+          $dir = (Get-ChildItem ffmpeg-dl -Directory | Select-Object -First 1).FullName
+          "FFMPEG_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$dir\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: build
+        working-directory: nexus-rs
+        run: cargo build --release -p nexus
+      - name: package
+        shell: pwsh
+        run: |
+          $d = "dist\Nexus"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item nexus-rs\target\release\nexus.exe "$d\Nexus.exe"
+          Copy-Item "$env:FFMPEG_DIR\bin\*.dll" $d
+          Copy-Item -Recurse fonts, icons, skins $d
+          Copy-Item LICENSE, README.md, PRIVACY.md $d
+      - name: self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\Nexus\Nexus.exe -ArgumentList '--selftest', "$PWD\selftest.txt" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { throw "self-test failed" }
+      # code signing goes here once SignPath is set up: sign dist\Nexus\Nexus.exe before the installer,
+      # and dist\nexus2-setup-x64.exe after it (see CODE_SIGNING.md)
+      - name: installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /DAppVersion=$env:V nexus-rs\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+          Compress-Archive dist\Nexus dist\nexus2-windows-x64.zip
+          Get-FileHash dist\nexus2-setup-x64.exe, dist\nexus2-windows-x64.zip -Algorithm SHA256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/nexus2-setup-x64.exe
+            dist/nexus2-windows-x64.zip
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q pkg-config clang libclang-dev nasm libopus-dev libasound2-dev \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev zip
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nexus-rs
+          key: release-static
+      - name: version
+        run: |
+          V="${VERSION#v}"; echo "V=$V" >> "$GITHUB_ENV"
+          sed -i "s/^version = \"2\.0\.0-dev\"/version = \"$V\"/" nexus-rs/Cargo.toml
+      - name: build (FFmpeg built in)
+        working-directory: nexus-rs
+        run: cargo build --release -p nexus --features static-ffmpeg
+      - name: package
+        run: |
+          ldd nexus-rs/target/release/nexus
+          if ldd nexus-rs/target/release/nexus | grep -E 'libav(codec|format|util)'; then echo "::error::FFmpeg isn't linked in"; exit 1; fi
+          mkdir -p dist/Nexus
+          cp nexus-rs/target/release/nexus dist/Nexus/
+          cp -r fonts icons skins nexus.desktop LICENSE README.md PRIVACY.md dist/Nexus/
+          (cd dist && zip -qr nexus2-linux-x86_64.zip Nexus)
+          sha256sum dist/nexus2-linux-x86_64.zip
+      - name: self-test
+        run: |
+          HOME=$RUNNER_TEMP NEXUS_HOME=$RUNNER_TEMP/nx ./dist/Nexus/nexus --selftest selftest.txt || (cat selftest.txt; exit 1)
+          cat selftest.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/nexus2-linux-x86_64.zip
+
+  publish:
+    needs: [windows, linux]
+    # Windows is what the updater needs; a failed Linux build doesn't hold the release back
+    if: always() && needs.windows.result == 'success' && (github.event_name == 'push' || github.event.inputs.publish == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: tag
+        id: t
+        run: |
+          V="${VERSION#v}"
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.t.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Nexus ${{ steps.t.outputs.version }}
+          prerelease: true
+          make_latest: false
+          files: dist/*
+          body: |
+            Nexus 2 — the Rust rewrite. Same settings, library and playlists as Nexus 1 (it installs over it).
+
+            - **Windows:** `nexus2-setup-x64.exe` (installer) or `nexus2-windows-x64.zip` (portable)
+            - **NixOS:** `nix run github:GameBitBan/Nexus/rust` or add the flake (see the README)
+            - **Other Linux:** `nexus2-linux-x86_64.zip` — unzip and run `Nexus/nexus`
