@@ -45,7 +45,7 @@ On first launch Nexus scans `~/Music` (or your Nexus 1 / monotone folders). Add 
 
 Windows and the Linux zip check GitHub Releases on launch and show an *update + restart* button at the bottom when there's a new version (settings → update to turn that off or check now). Downloads are checked against GitHub's checksum before anything is replaced. NixOS: update your flake input.
 
-Making a release: push a tag like `v2.0.1` on the `rust` branch. GitHub Actions builds the installer, the Windows zip and the Linux zip, tests them and publishes a pre-release.
+Making a release: bump `version` in `nexus-rs/Cargo.toml` and push to the `rust` branch (or push a tag like `v2.0.1`). GitHub Actions builds the installer, the Windows zip and the Linux zip, tests them and publishes a pre-release tagged `v<version>`; installed copies pick it up on their next start.
 
 ## sound
 

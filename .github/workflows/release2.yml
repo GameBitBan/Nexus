@@ -1,12 +1,17 @@
-# Nexus 2 (Rust) releases: push a tag like v2.0.0 on the rust branch (or run it by hand with a version).
+# Nexus 2 (Rust) releases — same flow as Nexus 1: bump `version` in nexus-rs/Cargo.toml and push to the
+# rust branch (or push a tag like v2.0.1, or run it by hand). Pushes that don't change to a new, non -dev
+# version are skipped.
 #  - Windows: nexus2-setup-x64.exe (installer, what the in-app updater runs) + nexus2-windows-x64.zip (portable)
 #  - Linux:   nexus2-linux-x86_64.zip (FFmpeg built in, runs on any recent distro; NixOS uses the flake)
 # Published as a pre-release, never "latest": Nexus 1 updates from the latest release and would pick up a
-# Nexus 2 zip. Switching everyone over is a separate, deliberate step.
+# Nexus 2 zip. Nexus 2 finds its own updates among the v2.* releases. Switching everyone over is a
+# separate, deliberate step.
 name: release2
 
 on:
   push:
+    branches: [rust]
+    paths: ["nexus-rs/Cargo.toml"]
     tags: ["v2.*"]
   workflow_dispatch:
     inputs:
@@ -21,12 +26,40 @@ on:
 permissions:
   contents: write
 
-env:
-  VERSION: ${{ github.event.inputs.version || github.ref_name }}
-
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      skip: ${{ steps.v.outputs.skip }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_PUBLISH: ${{ github.event.inputs.publish }}
+        run: |
+          FILE=$(grep -m1 '^version = ' nexus-rs/Cargo.toml | cut -d'"' -f2)
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch) V="${INPUT_VERSION#v}"; P="$INPUT_PUBLISH" ;;
+            *) if [ "$GITHUB_REF_TYPE" = tag ]; then V="${GITHUB_REF_NAME#v}"; else V="$FILE"; fi; P=true ;;
+          esac
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "publish=$P" >> "$GITHUB_OUTPUT"
+          case "$V" in
+            ""|*-dev*) echo "$V is a development version — nothing to release"; echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          if [ "$GITHUB_REF_TYPE" != tag ] && [ "$P" = true ] && git ls-remote --exit-code --tags origin "refs/tags/v$V" >/dev/null; then
+            echo "v$V is already released — nothing to do"; echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+
   windows:
+    needs: version
+    if: needs.version.outputs.skip != '1'
     runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -38,7 +71,7 @@ jobs:
         shell: bash
         run: |
           V="${VERSION#v}"; echo "V=$V" >> "$GITHUB_ENV"
-          sed -i "s/^version = \"2\.0\.0-dev\"/version = \"$V\"/" nexus-rs/Cargo.toml
+          sed -i "0,/^version = \".*\"/s//version = \"$V\"/" nexus-rs/Cargo.toml
           grep -m1 '^version' nexus-rs/Cargo.toml
       - name: FFmpeg (shared libraries + headers)
         shell: pwsh
@@ -93,7 +126,11 @@ jobs:
             dist/nexus2-windows-x64.zip
 
   linux:
+    needs: version
+    if: needs.version.outputs.skip != '1'
     runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: libraries
@@ -109,7 +146,7 @@ jobs:
       - name: version
         run: |
           V="${VERSION#v}"; echo "V=$V" >> "$GITHUB_ENV"
-          sed -i "s/^version = \"2\.0\.0-dev\"/version = \"$V\"/" nexus-rs/Cargo.toml
+          sed -i "0,/^version = \".*\"/s//version = \"$V\"/" nexus-rs/Cargo.toml
       - name: build (FFmpeg built in)
         working-directory: nexus-rs
         run: cargo build --release -p nexus --features static-ffmpeg
@@ -132,10 +169,12 @@ jobs:
           path: dist/nexus2-linux-x86_64.zip
 
   publish:
-    needs: [windows, linux]
+    needs: [version, windows, linux]
     # Windows is what the updater needs; a failed Linux build doesn't hold the release back
-    if: always() && needs.windows.result == 'success' && (github.event_name == 'push' || github.event.inputs.publish == 'true')
+    if: always() && needs.windows.result == 'success' && needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/download-artifact@v4
         with:

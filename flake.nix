@@ -23,7 +23,7 @@
       # Nexus 2 — the Rust version (this branch)
       nexus2 = pkgs: pkgs.rustPlatform.buildRustPackage {
         pname = "nexus";
-        version = "2.0.0-dev";
+        version = "2.0.0";
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
           filter = path: type:
