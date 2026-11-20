@@ -60,6 +60,31 @@ pub fn newer(remote: &str, current: &str) -> bool {
     !remote.is_empty() && vtuple(remote) > vtuple(current)
 }
 
+/// The newest published release of this major version that has our download: (version, url, digest).
+/// Nexus 1 releases (v1.*) and drafts are skipped.
+pub fn pick_release(list: &Value, want: &str, current: &str) -> (String, String, String) {
+    let major = vtuple(current).first().copied().unwrap_or(2);
+    let mut best: Option<(Vec<u64>, String, String, String)> = None;
+    for rel in list.as_array().into_iter().flatten() {
+        if rel.get("draft").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
+        let ver = rel.get("tag_name").and_then(Value::as_str).unwrap_or("").trim_start_matches(['v', 'V']).to_string();
+        let vt = vtuple(&ver);
+        if vt.first().copied() != Some(major) {
+            continue;
+        }
+        let asset = rel.get("assets").and_then(Value::as_array).and_then(|a| a.iter().find(|x| x.get("name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(want))));
+        let Some(asset) = asset else { continue };
+        let url = asset.get("browser_download_url").and_then(Value::as_str).unwrap_or("").to_string();
+        let digest = asset.get("digest").and_then(Value::as_str).unwrap_or("").to_string();
+        if best.as_ref().is_none_or(|b| vt > b.0) {
+            best = Some((vt, ver, url, digest));
+        }
+    }
+    best.map(|b| (b.1, b.2, b.3)).unwrap_or_default()
+}
+
 #[derive(Clone, Debug)]
 pub enum Check {
     UpToDate(String),
@@ -82,11 +107,9 @@ pub fn check(repo: &str, feed: &str, dest: &Path) -> Result<Check, String> {
         (s("version"), s("zip"), if sha.is_empty() { String::new() } else { format!("sha256:{sha}") })
     } else {
         let repo = if repo.trim().is_empty() { GITHUB_REPO } else { repo.trim().trim_matches('/') };
-        let rel = net::get_json_with(&format!("https://api.github.com/repos/{repo}/releases/latest"), &[("Accept", "application/vnd.github+json")], 10)?;
-        let ver = rel.get("tag_name").and_then(Value::as_str).unwrap_or("").trim_start_matches(['v', 'V']).to_string();
-        let asset = rel.get("assets").and_then(Value::as_array).and_then(|a| a.iter().find(|x| x.get("name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(want)))).cloned();
-        let url = asset.as_ref().and_then(|a| a.get("browser_download_url")).and_then(Value::as_str).unwrap_or("").to_string();
-        let digest = asset.as_ref().and_then(|a| a.get("digest")).and_then(Value::as_str).unwrap_or("").to_string();
+        // every release, not just "latest": Nexus 2 ships as pre-releases next to Nexus 1's releases
+        let list = net::get_json_with(&format!("https://api.github.com/repos/{repo}/releases?per_page=40"), &[("Accept", "application/vnd.github+json")], 10)?;
+        let (ver, url, digest) = pick_release(&list, want, current);
         if !url.is_empty() && !url.starts_with(&format!("https://github.com/{repo}/releases/download/")) {
             return Err("the release points somewhere other than GitHub — not installing it".into());
         }
@@ -185,5 +208,18 @@ mod tests {
         assert!(!newer("1.19.1", "2.0.0-dev"));
         assert!(newer("2.1", "2.0.9"));
         assert_eq!(vtuple("v2.10.3-beta4"), vec![2, 10, 3, 4]);
+    }
+
+    #[test]
+    fn picks_newest_nexus_2_release() {
+        let list = serde_json::json!([
+            {"tag_name": "v1.20.0", "draft": false, "assets": [{"name": "nexus.zip", "browser_download_url": "u1", "digest": "sha256:a"}]},
+            {"tag_name": "v2.0.2", "draft": true, "assets": [{"name": "nexus2-setup-x64.exe", "browser_download_url": "d", "digest": "sha256:d"}]},
+            {"tag_name": "v2.0.1", "draft": false, "prerelease": true, "assets": [{"name": "nexus2-setup-x64.exe", "browser_download_url": "u3", "digest": "sha256:c"}]},
+            {"tag_name": "v2.0.0", "draft": false, "assets": [{"name": "nexus2-setup-x64.exe", "browser_download_url": "u2", "digest": "sha256:b"}]},
+            {"tag_name": "v2.0.5", "draft": false, "assets": [{"name": "other.zip"}]}
+        ]);
+        assert_eq!(pick_release(&list, "nexus2-setup-x64.exe", "2.0.0"), ("2.0.1".into(), "u3".into(), "sha256:c".into()));
+        assert_eq!(pick_release(&list, "nexus2-linux-x86_64.zip", "2.0.0"), Default::default());
     }
 }
